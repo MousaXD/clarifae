@@ -167,7 +167,7 @@ static int32_t ce_process(effect_handle_t self,
 
     int side_enabled = (c->kind == CLF_KIND_OUTPUT) ? c->cfg.out_enabled
                                                      : c->cfg.in_enabled;
-    int bypass = (!c->cfg.enabled) || (!side_enabled) ||
+    int bypass = (!c->host_enabled) || (!c->cfg.enabled) || (!side_enabled) ||
                  (!c->configured) || (!c->backend) || (!c->bstate);
 
     /* ---- bypass: copy input to output (respecting accumulate) ---- */
