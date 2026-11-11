@@ -30,11 +30,6 @@ typedef struct clarifae_config {
  * for any that are unset/empty. Also updates the global clarifae_log_level. */
 void clarifae_config_load(clarifae_config_t* cfg);
 
-/* Cheap check (property serial compare) for "did any clarifae prop change since
- * the last call?". Returns non-zero when a reload is warranted. Safe to call
- * from the realtime process() path. */
-int clarifae_config_changed(void);
-
 #ifdef __cplusplus
 }
 #endif

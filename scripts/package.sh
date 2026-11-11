@@ -1,43 +1,24 @@
 #!/usr/bin/env bash
-# package.sh — zip the module into a flashable dist/clarifae-<ver>.zip.
-# Excludes build-only material (native sources, build dirs, host scripts).
+# Package the module payload only. The companion APK has its own build.
 set -euo pipefail
+cd "$(dirname "$0")/.."
+version="$(sed -n 's/^version=//p' module.prop)"
+out="$PWD/dist/clarifae-$version.zip"
 
-MOD="$(cd "$(dirname "$0")/.." && pwd)"     # project root == module root
-VER="$(grep '^version=' "$MOD/module.prop" | cut -d= -f2)"
-OUT="$MOD/dist/clarifae-$VER.zip"
-
-# Warn (don't fail) if the native lib hasn't been built yet.
-if ! ls "$MOD"/system/lib*/soundfx/libclarifae.so >/dev/null 2>&1 \
-   && ! ls "$MOD"/lib/*/libclarifae.so >/dev/null 2>&1; then
-  echo "WARNING: no libclarifae.so staged. Run ./build.sh first or the zip won't install." >&2
+shopt -s nullglob
+libs=(lib/*/libclarifae.so)
+if (( ${#libs[@]} == 0 )); then
+  echo "No per-ABI native effect found. Run ./build.sh first." >&2
+  exit 1
 fi
 
-mkdir -p "$MOD/dist"
-rm -f "$OUT"
-
-# Zip the module, excluding build-only material AND the repo docs/assets that now
-# live alongside the module in the same folder.
-( cd "$MOD" && zip -r9 "$OUT" . \
-    -x 'native/*' \
-    -x 'build/*' \
-    -x 'scripts/*' \
-    -x 'build.sh' \
-    -x 'dist/*' \
-    -x 'docs/*' \
-    -x '.git/*' \
-    -x '*.o' \
-    -x '*.tmp*' \
-    -x 'rnnoise-*.tar.gz' \
-    -x 'README.md' \
-    -x 'INSTALL.md' \
-    -x 'realtime_audio_denoising_models.md' \
-    -x 'brand.txt' \
-    -x 'logo.svg' >/dev/null )
-
-echo "Created: $OUT  ($(du -h "$OUT" | cut -f1))"
-echo "Contents (top level):"
-unzip -l "$OUT" | awk 'NR>3 && $4 !~ /\// {print "  "$4}' | head -20
-echo "  ..."
-echo
-echo "Flash $OUT in Magisk / KernelSU / APatch."
+files=(module.prop META-INF customize.sh post-fs-data.sh service.sh uninstall.sh
+       system.prop sepolicy.rule common webroot scripts/diagnose-hyperos.sh "${libs[@]}")
+[[ ! -d models ]] || files+=(models)
+mkdir -p dist
+tmp="$(mktemp -d "$PWD/dist/package.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+zip -qr9 "$tmp/module.zip" "${files[@]}"
+unzip -tq "$tmp/module.zip"
+mv -f "$tmp/module.zip" "$out"
+echo "Created: $out"

@@ -16,5 +16,6 @@ rm -rf "$CLARIFAE_DIR"
 for k in enabled in_enabled out_enabled mode strength out_strength atten_db vad targets out_targets highpass autogain loglevel; do
   if command -v resetprop >/dev/null 2>&1; then
     resetprop --delete "persist.clarifae.$k" 2>/dev/null
+    resetprop --delete "persist.vendor.clarifae.$k" 2>/dev/null
   fi
 done

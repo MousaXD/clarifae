@@ -24,8 +24,8 @@ extern "C" {
 #define EFFECT_API_VERSION_MAJOR(v)    ((v) >> 16)
 #define EFFECT_API_VERSION_MINOR(v)    ((v) & 0xffff)
 
-/* AudioFlinger only requires the MAJOR version (3) to match. */
-#define EFFECT_CONTROL_API_VERSION     EFFECT_MAKE_API_VERSION(3, 0)  /* 0x00030000 */
+/* The descriptor reports the control API. AELI reports the library API. */
+#define EFFECT_CONTROL_API_VERSION     EFFECT_MAKE_API_VERSION(2, 0)  /* 0x00020000 */
 #define EFFECT_LIBRARY_API_VERSION     EFFECT_MAKE_API_VERSION(3, 0)  /* 0x00030000 */
 
 #define EFFECT_STRING_LEN 64
@@ -183,7 +183,7 @@ struct effect_interface_s {
 typedef struct effect_interface_s effect_interface_t;
 
 /* ----- effect library interface ----- */
-#define AUDIO_EFFECT_LIBRARY_TAG ((('E') << 24) | (('F') << 16) | (('F') << 8) | ('A')) /* 0x45464641 */
+#define AUDIO_EFFECT_LIBRARY_TAG ((('A') << 24) | (('E') << 16) | (('L') << 8) | ('T'))
 #define AUDIO_EFFECT_LIBRARY_INFO_SYM        AELI
 #define AUDIO_EFFECT_LIBRARY_INFO_SYM_AS_STR "AELI"
 

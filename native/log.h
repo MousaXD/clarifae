@@ -10,21 +10,22 @@
 #define CLARIFAE_LOG_H
 
 #include <android/log.h>
+#include <stdatomic.h>
 
 #define CLARIFAE_LOG_TAG "Clarifae"
 
 /* 0 = off, 1 = errors/warn, 2 = info, 3 = debug/verbose */
-extern int clarifae_log_level;
+extern atomic_int clarifae_log_level;
 
-#define CLARIFAE_LOGE(...) do { if (clarifae_log_level >= 1) \
+#define CLARIFAE_LOGE(...) do { if (atomic_load_explicit(&clarifae_log_level, memory_order_relaxed) >= 1) \
     __android_log_print(ANDROID_LOG_ERROR, CLARIFAE_LOG_TAG, __VA_ARGS__); } while (0)
-#define CLARIFAE_LOGW(...) do { if (clarifae_log_level >= 1) \
+#define CLARIFAE_LOGW(...) do { if (atomic_load_explicit(&clarifae_log_level, memory_order_relaxed) >= 1) \
     __android_log_print(ANDROID_LOG_WARN,  CLARIFAE_LOG_TAG, __VA_ARGS__); } while (0)
-#define CLARIFAE_LOGI(...) do { if (clarifae_log_level >= 2) \
+#define CLARIFAE_LOGI(...) do { if (atomic_load_explicit(&clarifae_log_level, memory_order_relaxed) >= 2) \
     __android_log_print(ANDROID_LOG_INFO,  CLARIFAE_LOG_TAG, __VA_ARGS__); } while (0)
-#define CLARIFAE_LOGD(...) do { if (clarifae_log_level >= 3) \
+#define CLARIFAE_LOGD(...) do { if (atomic_load_explicit(&clarifae_log_level, memory_order_relaxed) >= 3) \
     __android_log_print(ANDROID_LOG_DEBUG, CLARIFAE_LOG_TAG, __VA_ARGS__); } while (0)
-#define CLARIFAE_LOGV(...) do { if (clarifae_log_level >= 3) \
+#define CLARIFAE_LOGV(...) do { if (atomic_load_explicit(&clarifae_log_level, memory_order_relaxed) >= 3) \
     __android_log_print(ANDROID_LOG_VERBOSE, CLARIFAE_LOG_TAG, __VA_ARGS__); } while (0)
 
 #endif /* CLARIFAE_LOG_H */

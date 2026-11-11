@@ -4,7 +4,7 @@
 
 | For | You need |
 |---|---|
-| Flashing only | Magisk ≥ 24.0 **or** KernelSU **or** APatch on a rooted device |
+| Flashing only | Magisk ≥ 24.0, KernelSU with working systemless mounts, or APatch on a rooted device |
 | WebUI on Magisk | the [MMRL](https://github.com/MMRLApp/MMRL) app (KernelSU/APatch have it built in) |
 | Building | Android NDK r27+, CMake ≥ 3.18, `git`, `zip`, network access |
 
@@ -30,10 +30,8 @@ export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/28.2.13676358
 > shim the release omits — no network needed. Otherwise it falls back to
 > `git clone` + a **resumable, checksum-verified** weights download.
 
-`build.sh` stages each ABI into:
-
-- `lib/<abi>/libclarifae.so` (archive copy)
-- `system/lib64/soundfx/libclarifae.so` (64-bit ABIs) / `system/lib/soundfx/…` (32-bit)
+`build.sh` stages `lib/<abi>/libclarifae.so` for each ABI. The installer
+stages the library into the device's sound effects directory at flash time.
 
 Build a subset of ABIs:
 
@@ -76,43 +74,22 @@ If the symbol names from your `libdf` build differ, adjust the `extern` block in
 ## 4. Package the flashable zip
 
 ```bash
-./scripts/package.sh           # -> ../dist/clarifae-v1.0.0.zip
+./scripts/package.sh           # -> dist/clarifae-<version>.zip
 ```
 
-The zip excludes build-only material (`native/`, `build/`, host `scripts/`). It contains
-`module.prop`, `META-INF/`, the install scripts, `common/`, the prebuilt
-`system/lib*/soundfx/libclarifae.so`, `webroot/`, and any staged `models/`.
+The ZIP contains the module scripts, the prebuilt `lib/<abi>/libclarifae.so`
+files, WebUI, on-device diagnostic, and any staged models.
 
 ## 5. Flash & enable
 
-1. Flash `dist/clarifae-v1.0.0.zip` in Magisk / KernelSU / APatch.
+1. Flash `dist/clarifae-<version>.zip` in Magisk / KernelSU / APatch.
 2. **Reboot.**
 3. Open the WebUI:
    - **KernelSU / APatch:** Modules → *Clarifae* → **Open**.
    - **Magisk:** open **MMRL** → Clarifae → WebUI.
 4. Toggle Clarifae **on** and pick a clarity mode (default = RNNoise).
 
-## 6. Verify it's working
+## 6. Verify capture processing
 
-```bash
-su -c clarifae-ctl status
-```
-
-You want `lib64: installed`, `xml: patched`, `audiosrv: running`. To confirm the effect
-attached to a live capture session, start a recording/call, then:
-
-```bash
-su -c 'dumpsys media.audio_flinger | grep -i clarifae'
-su -c 'logcat -s Clarifae'        # shows "active backend=rnnoise …" when a session opens
-```
-
-If `effect: not detected`, open a new recording app or run
-`clarifae-ctl restart-audio` (see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
-
-## 7. Uninstall
-
-Remove the module in your root manager and reboot. The overlay (patched
-`audio_effects.xml`, the soundfx library, `clarifae-ctl`) is unmounted automatically and
-the original device files are restored untouched. `uninstall.sh` clears
-`/data/adb/clarifae` (backing up your config to `/data/adb/clarifae-config.bak`) and
-deletes the `persist.clarifae.*` properties.
+Start a recording in an unrelated recorder app and follow the
+[HyperOS verification steps](docs/HYPEROS_COMPATIBILITY.md).

@@ -21,20 +21,9 @@ case "$ARCH" in
   *) abort "! Unsupported architecture: $ARCH" ;;
 esac
 
-# --- install the native effect for THIS device's ABI ---
-# The zip bundles every ABI under lib/<abi>/; install only the matching one into
-# system/lib(64)/soundfx (both 64-bit ABIs share lib64, so we must pick here).
+# --- stage the native effect for the vendor audio service's linker namespace ---
 [ -f "$MODPATH/lib/$ABI/libclarifae.so" ] || \
   abort "! libclarifae.so for $ABI not bundled. Build it: ABIS=\"$ABI\" ./build.sh"
-
-# clear any stale soundfx libs, then install the correct one
-rm -f "$MODPATH/system/lib/soundfx/libclarifae.so" "$MODPATH/system/lib64/soundfx/libclarifae.so" 2>/dev/null
-mkdir -p "$MODPATH/system/$LIBD/soundfx"
-cp -f "$MODPATH/lib/$ABI/libclarifae.so" "$MODPATH/system/$LIBD/soundfx/libclarifae.so"
-ui_print "- Installed libclarifae.so ($ABI) -> system/$LIBD/soundfx"
-
-# drop per-ABI archive + any stray dev dirs to keep the installed module small
-rm -rf "$MODPATH/lib" "$MODPATH/native" "$MODPATH/build" 2>/dev/null
 
 # --- runtime data dir + config + helpers ---
 mkdir -p "$CLARIFAE_DIR/models/dtln" "$CLARIFAE_DIR/models/df"
@@ -53,14 +42,30 @@ chmod 0755 "$CLARIFAE_DIR/clarifae-ctl"
 # --- copy any bundled optional models to /data ---
 [ -d "$MODPATH/models" ] && cp -rf "$MODPATH/models/." "$CLARIFAE_DIR/models/" 2>/dev/null
 
-# --- auto-attach the effect via audio_effects.xml ---
-ui_print "- Registering Clarifae pre-processing effect..."
-if patch_audio_effects "$MODPATH"; then
-  ui_print "  + audio_effects patched: $(cat "$PATCH_MARK")"
+# --- stage registration without modifying the live partitions ---
+lib_dest=
+rm -f "$PATCH_MARK"
+if aidl_effect_factory_running; then
+  ui_print "! AIDL audio effects factory detected. This build supports legacy/HIDL effects."
+  ui_print "  Diagnostic tools installed. Audio configuration was left alone."
+  clarifae_log "AIDL effects factory detected; legacy registration skipped"
+elif patch_audio_effects "$MODPATH"; then
+  if [ -d "/vendor/$LIBD/soundfx" ]; then
+    lib_dest="$MODPATH/system/vendor/$LIBD/soundfx/libclarifae.so"
+    lib_label=u:object_r:vendor_file:s0
+  else
+    lib_dest="$MODPATH/system/$LIBD/soundfx/libclarifae.so"
+    lib_label=u:object_r:system_file:s0
+  fi
+  mkdir -p "$(dirname "$lib_dest")" && cp -f "$MODPATH/lib/$ABI/libclarifae.so" "$lib_dest" ||
+    abort "! Unable to stage libclarifae.so"
+  ui_print "- Staged libclarifae.so ($ABI) -> ${lib_dest#"$MODPATH/"}"
+  ui_print "- Staged audio configuration for $(cat "$PATCH_MARK")"
+  ui_print "  Reboot and verify during recording. Some KernelSU versions require a mounting metamodule."
 else
-  ui_print "  ! Auto-patch of audio_effects.xml failed on this device."
-  ui_print "    Library is installed; see docs/TROUBLESHOOTING.md to attach manually."
+  ui_print "! Could not stage audio effects on this device. Use the installed diagnostic script."
 fi
+rm -rf "$MODPATH/lib"
 
 # --- seed props (service.sh re-applies on every boot) ---
 prop_sync 2>/dev/null
@@ -68,12 +73,11 @@ prop_sync 2>/dev/null
 # --- permissions ---
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/system/bin/clarifae-ctl" 0 0 0755
-[ -f "$MODPATH/system/lib64/soundfx/libclarifae.so" ] && set_perm "$MODPATH/system/lib64/soundfx/libclarifae.so" 0 0 0644
-[ -f "$MODPATH/system/lib/soundfx/libclarifae.so" ]   && set_perm "$MODPATH/system/lib/soundfx/libclarifae.so" 0 0 0644
+[ -n "$lib_dest" ] && set_perm "$lib_dest" 0 0 0644 "$lib_label"
 
 ui_print " "
 ui_print "  Installed. Reboot, then open the WebUI:"
 ui_print "   - KernelSU/APatch: Modules > Clarifae > Open"
 ui_print "   - Magisk: use the MMRL app to open Clarifae's WebUI"
-ui_print "  Default engine = RNNoise (works out of the box)."
+ui_print "  Default engine: RNNoise."
 ui_print " "

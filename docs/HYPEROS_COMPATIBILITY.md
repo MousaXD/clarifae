@@ -1,35 +1,28 @@
-# HyperOS 2 / POCO X7 Pro compatibility investigation
+# POCO X7 Pro and HyperOS microphone verification
 
-## Current status: NOT FIXED OR DEVICE-VERIFIED
+The POCO X7 Pro is also known as `rodin`. A [public Rodin custom-ROM tree](https://github.com/gimmebackmysandwich/device_xiaomi_rodin/tree/f4e4914) uses a HIDL 7.0 audio effects factory and an XML configuration with existing echo cancellation, noise suppression, and automatic gain control for `voice_communication`. The stock HyperOS firmware and its active capture routes must be checked on the phone.
 
-Clarifae's installer patches the **first** existing audio-effects configuration it finds. This is not proof that Android 15's running audio service consumes that file. The installer also reports success when an overlay was merely staged. On devices with vendor AIDL effects or a separate audio-effects service, a legacy `AELI` effect may not load.
+## What v1.1.3 fixes
 
-AOSP defines microphone preprocessing per capture source in audio policy. Android 15's audio effect framework may be implemented through vendor-specific HAL/service paths. Do not disable Xiaomi's stock noise suppression or replace stock vendor libraries to force attachment.
+- The [Android 15 legacy effect ABI](https://android.googlesource.com/platform/hardware/libhardware/+/refs/heads/android15-release/include_all/hardware/audio_effect.h) expects the `AELI` symbol with the `AELT` tag, library API 3.0 and control API 2.0. Earlier Clarifae source used the wrong tag and control version.
+- The module builds with the public Android NDK property API. Each effect session checks its own live settings and both framework and vendor effect hosts have a property prefix.
+- The installer follows Android 15's legacy lookup order, with ODM and the vendor SKU-specific directory ahead of the generic vendor directory. It preserves existing XML effects and stages the library in the vendor sound effects directory when available.
+- The module checks for an active AIDL effects factory at install time. AIDL factories require a different plugin ABI. On a detected AIDL device the installer stages diagnostic tools and skips legacy effect registration.
+- The installer relies on the root manager's systemless mounts. Recent official KernelSU versions require a [mounting metamodule](https://kernelsu.org/guide/module.html) for modules that overlay system files. Visibility of a separate ODM partition also depends on the mount implementation.
 
-## Read-only diagnostic
+## Verify during an independent recording
 
-From a root shell in the checked-out repository run:
+1. Install the module ZIP through the root manager and reboot.
+2. Turn off Clarifae playback processing during the microphone test. Set logging to Info with `su -c 'sh /data/adb/clarifae/clarifae-ctl set loglevel 2'`.
+3. Start a recording in Xiaomi Recorder or another unrelated app. Keep it recording while running:
 
-```sh
-su -c 'sh /path/to/clarifae/scripts/diagnose-hyperos.sh'
-```
+   ```sh
+   su -c 'sh /data/adb/modules/clarifae/scripts/diagnose-hyperos.sh'
+   ```
 
-Start a real recording in a separate app **before** running the diagnostic, and keep it active while collecting AudioFlinger information. The script does not record or upload audio. Inspect output for personal information before sharing.
+4. Check the effect factory, whether the Clarifae UUID is visible in the audio service's mount namespace, whether the library is mapped, and whether a new `processed PCM: capture session=` entry corresponds to that recording. An effect descriptor can be present even when the capture session bypasses the effect.
+5. Record matched clips with Clarifae OFF and ON, using the same app, input route, speech and background noise. Close and reopen the recorder between takes. Confirm the noise falls while speech remains clear. Repeat separately for VoIP, camera or Bluetooth if those routes matter.
 
-### Interpreting results
+Android associates default effects with recording sources. Apps that request unprocessed audio, and capture routes implemented below the Android effect chain, may behave differently. Leave noise suppression off by default for voice recognition as specified by [Android's preprocessing guidance](https://source.android.com/docs/core/audio/implement-pre-processing).
 
-- Overlay staged but no Clarifae entry in the live effect chain: installation success is misleading; verify the config selected by the actual audio service.
-- Effect registered but no instance on a live MIC/VOICE_COMMUNICATION capture: capture-source routing/attachment issue.
-- Effect instance present, but no backend activation log: check native library ABI, SELinux denials, effect lifecycle and backend initialization.
-- Instance and backend active, but unchanged WAV in independent test: verify processing counters and A/B signal metrics; a WebUI toggle alone is insufficient.
-
-Do not flash an experimental vendor overlay until exact firmware paths and loader architecture are confirmed. Never replace Xiaomi audio HAL binaries or disable SELinux as a workaround.
-
-## Acceptance criteria
-
-1. Correct loader/config identified on exact POCO X7 Pro HyperOS 2 firmware.
-2. Root module installation and removal preserve stock configuration.
-3. Actual recording session reports Clarifae effect instance.
-4. Native effect processing is measurable without relying on the WebUI.
-5. Independent APK and unrelated recorder demonstrate matched-condition OFF/ON difference.
-6. Calls, Bluetooth routing, playback, battery and reboot regression checks pass.
+The diagnostic reads device state and logs. It neither records audio nor changes settings. If audio becomes unreliable, disable the module in the root manager and reboot.

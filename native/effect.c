@@ -37,7 +37,11 @@ typedef struct {
 
     int      host_enabled;   /* EFFECT_CMD_ENABLE/DISABLE */
     int      configured;
+    int      session_id;
+    int      processing_logged;
+    size_t   frames_until_refresh;
     uint32_t sample_rate;
+    uint32_t in_channels, out_channels;
     int      channels;
     uint8_t  in_format, out_format;
     uint8_t  in_access, out_access;
@@ -146,29 +150,34 @@ static int ensure_fbuf(clarifae_ctx_t* c, size_t need) {
 static int32_t ce_process(effect_handle_t self,
                           audio_buffer_t* in, audio_buffer_t* out) {
     clarifae_ctx_t* c = (clarifae_ctx_t*)self;
-    if (!c || !in || !out || !in->raw || !out->raw) return -EINVAL;
+    if (!c || !in || !out || !in->raw || !out->raw || !c->configured) return -EINVAL;
 
     size_t frames = in->frameCount;
     if (out->frameCount < frames) frames = out->frameCount;
-    int ch = c->channels > 0 ? c->channels : 1;
+    int ch = c->channels;
+    if (frames > INT32_MAX || frames > SIZE_MAX / sizeof(float) / (size_t)ch) return -EINVAL;
 
-    /* live config refresh (cheap serial check) */
-    if (clarifae_config_changed()) {
-        int prev_mode = c->cfg.mode;
-        clarifae_config_load(&c->cfg);   /* also updates clarifae_log_level */
-        if (c->configured) {
-            if (c->cfg.mode != prev_mode || !c->backend) {
+    /* Each capture/playback session observes settings independently. */
+    if (frames >= c->frames_until_refresh) {
+        clarifae_config_t next;
+        clarifae_config_load(&next);
+        if (memcmp(&next, &c->cfg, sizeof(next)) != 0) {
+            c->cfg = next;
+            if (c->cfg.mode != c->cur_mode || !c->backend) {
                 backend_open(c);
             } else {
                 backend_apply_params(c);
             }
         }
+        c->frames_until_refresh = c->sample_rate / 4;
+    } else {
+        c->frames_until_refresh -= frames;
     }
 
     int side_enabled = (c->kind == CLF_KIND_OUTPUT) ? c->cfg.out_enabled
                                                      : c->cfg.in_enabled;
     int bypass = (!c->host_enabled) || (!c->cfg.enabled) || (!side_enabled) ||
-                 (!c->configured) || (!c->backend) || (!c->bstate);
+                 (!c->backend) || (!c->bstate);
 
     /* ---- bypass: copy input to output (respecting accumulate) ---- */
     if (bypass) {
@@ -187,7 +196,7 @@ static int32_t ce_process(effect_handle_t self,
             else
                 memmove(out->s16, in->s16, n * sizeof(int16_t));
         }
-        return 0;
+        return c->host_enabled ? 0 : -ENODATA;
     }
 
     size_t n = frames * (size_t)ch;
@@ -201,6 +210,13 @@ static int32_t ce_process(effect_handle_t self,
     }
 
     c->backend->process(c->bstate, c->fbuf, (int)frames);
+    if (frames && !c->processing_logged &&
+        atomic_load_explicit(&clarifae_log_level, memory_order_relaxed) >= 2) {
+        c->processing_logged = 1;
+        CLARIFAE_LOGI("processed PCM: %s session=%d rate=%u channels=%d",
+                     c->kind == CLF_KIND_INPUT ? "capture" : "playback",
+                     c->session_id, c->sample_rate, c->channels);
+    }
 
     /* float -> output */
     if (c->out_format == AUDIO_FORMAT_PCM_FLOAT) {
@@ -232,17 +248,25 @@ static int32_t ce_process_reverse(effect_handle_t self,
     return -ENOSYS;   /* no far-end reference path */
 }
 
-static void read_buffer_cfg(clarifae_ctx_t* c, const buffer_config_t* incfg,
+static int read_buffer_cfg(clarifae_ctx_t* c, const buffer_config_t* incfg,
                             const buffer_config_t* outcfg) {
-    c->sample_rate = incfg->samplingRate ? incfg->samplingRate : 16000;
-    uint32_t mask = incfg->channels;
-    int ch = mask ? __builtin_popcount(mask) : 1;
-    if (ch < 1) ch = 1;
-    c->channels = ch;
-    c->in_format  = incfg->format ? incfg->format : AUDIO_FORMAT_PCM_16_BIT;
-    c->out_format = outcfg->format ? outcfg->format : c->in_format;
+    int channels = __builtin_popcount(incfg->channels & 0x3fffffffu);
+    if (!incfg->samplingRate || incfg->samplingRate != outcfg->samplingRate ||
+        !channels || channels != __builtin_popcount(outcfg->channels & 0x3fffffffu) ||
+        incfg->format != outcfg->format ||
+        (incfg->format != AUDIO_FORMAT_PCM_16_BIT && incfg->format != AUDIO_FORMAT_PCM_FLOAT)) {
+        return -EINVAL;
+    }
+    c->sample_rate = incfg->samplingRate;
+    c->in_channels = incfg->channels;
+    c->out_channels = outcfg->channels;
+    c->channels = channels;
+    c->in_format = incfg->format;
+    c->out_format = outcfg->format;
     c->in_access  = incfg->accessMode;
     c->out_access = outcfg->accessMode;
+    c->frames_until_refresh = 0;
+    return 0;
 }
 
 static int32_t ce_command(effect_handle_t self, uint32_t cmd, uint32_t cmdSize,
@@ -260,11 +284,13 @@ static int32_t ce_command(effect_handle_t self, uint32_t cmd, uint32_t cmdSize,
             !replySize || !pReply || *replySize < sizeof(int))
             return -EINVAL;
         effect_config_t* ec = (effect_config_t*)pCmd;
-        read_buffer_cfg(c, &ec->inputCfg, &ec->outputCfg);
-        c->configured = 1;
-        clarifae_config_load(&c->cfg);
-        int rc = backend_open(c);
-        *(int*)pReply = (rc == 0) ? 0 : rc;
+        int rc = read_buffer_cfg(c, &ec->inputCfg, &ec->outputCfg);
+        if (rc == 0) {
+            clarifae_config_load(&c->cfg);
+            rc = backend_open(c);
+            c->configured = (rc == 0);
+        }
+        *(int*)pReply = rc;
         return 0;
     }
 
@@ -274,6 +300,8 @@ static int32_t ce_command(effect_handle_t self, uint32_t cmd, uint32_t cmdSize,
         effect_config_t* ec = (effect_config_t*)pReply;
         memset(ec, 0, sizeof(*ec));
         ec->inputCfg.samplingRate = ec->outputCfg.samplingRate = c->sample_rate;
+        ec->inputCfg.channels = c->in_channels;
+        ec->outputCfg.channels = c->out_channels;
         ec->inputCfg.format  = c->in_format;
         ec->outputCfg.format = c->out_format;
         ec->inputCfg.accessMode  = c->in_access;
@@ -288,6 +316,7 @@ static int32_t ce_command(effect_handle_t self, uint32_t cmd, uint32_t cmdSize,
 
     case EFFECT_CMD_ENABLE:
         c->host_enabled = 1;
+        c->processing_logged = 0;
         if (replySize && pReply && *replySize >= sizeof(int)) *(int*)pReply = 0;
         return 0;
 
@@ -339,7 +368,7 @@ static const struct effect_interface_s kInterface = {
 /* ---- library interface ---- */
 static int32_t lib_create(const effect_uuid_t* uuid, int32_t sessionId,
                           int32_t ioId, effect_handle_t* pHandle) {
-    (void)sessionId; (void)ioId;
+    (void)ioId;
     if (!pHandle || !uuid) return -EINVAL;
     int kind = kind_for_uuid(uuid);
     if (kind < 0) return -EINVAL;
@@ -348,6 +377,7 @@ static int32_t lib_create(const effect_uuid_t* uuid, int32_t sessionId,
     if (!c) return -ENOMEM;
     c->itfe = &kInterface;
     c->kind = kind;
+    c->session_id = sessionId;
     fill_descriptor(&c->desc, kind);
     clarifae_config_load(&c->cfg);
     c->cur_mode = c->cfg.mode;

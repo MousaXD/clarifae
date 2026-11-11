@@ -122,8 +122,8 @@
       ['Enabled', bool(s.enabled)],
       ['Mic cleanup', bool(s.in_enabled)],
       ['Playback cleanup', bool(s.out_enabled)],
-      ['Effect loaded', triState(s.effect_loaded)],
-      ['audio_effects patched', bool(s.xml_patched)],
+      ['AudioFlinger reference', triState(s.effect_loaded)],
+      ['Effect config staged', bool(s.xml_patched)],
       ['Library (64-bit)', bool(s.lib64)],
       ['Library (32-bit)', s.lib32 ? yes('yes') : neutral('—')],
       ['audioserver', bool(s.audioserver)],
@@ -141,7 +141,7 @@
   function warn(t) { return '<span class="v warn">' + t + '</span>'; }
   function neutral(t) { return '<span class="v">' + t + '</span>'; }
   function bool(b) { return b ? yes('yes') : no('no'); }
-  function triState(b) { return b ? yes('loaded') : warn('not detected'); }
+  function triState(b) { return b ? yes('found') : warn('not detected'); }
 
   /* ---------- data flow ---------- */
   function loadAll() {

@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
@@ -26,7 +25,6 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
     private val sampleRate = 16000
     private val recording = AtomicBoolean(false)
-    private var worker: Thread? = null
     private lateinit var status: TextView
     private lateinit var toggle: Button
     private lateinit var source: Spinner
@@ -49,7 +47,7 @@ class MainActivity : Activity() {
             textSize = 22f
         })
         layout.addView(TextView(this).apply {
-            text = "Records raw Android AudioRecord output in a separate app process. It does not run Clarifae processing. Compare module OFF vs ON, then repeat in a third-party app."
+            text = "Records Android AudioRecord output. Compare Clarifae OFF and ON, then repeat in a separate recording app."
             textSize = 15f
             setPadding(0, 24, 0, 24)
         })
@@ -59,7 +57,10 @@ class MainActivity : Activity() {
         layout.addView(source)
         toggle = Button(this).apply {
             text = "Start 10-second recording"
-            setOnClickListener { if (recording.get()) stopCapture() else startCapture() }
+            setOnClickListener {
+                if (source.isEnabled) startCapture()
+                else if (recording.get()) stopCapture()
+            }
         }
         layout.addView(toggle)
         status = TextView(this).apply {
@@ -90,15 +91,17 @@ class MainActivity : Activity() {
         toggle.text = "Stop and save"
         source.isEnabled = false
         status.text = "Recording ${chosen.first}…"
-        worker = thread(name = "clarifae-independent-capture") {
+        thread(name = "clarifae-independent-capture") {
             val pcm = ByteArrayOutputStream()
             val buffer = ByteArray(4096)
             var error: String? = null
             try {
                 recorder.startRecording()
-                val deadline = System.nanoTime() + 10_000_000_000L
-                while (recording.get() && System.nanoTime() < deadline) {
-                    val n = recorder.read(buffer, 0, buffer.size)
+                check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
+                val captureBytes = sampleRate * 2 * 10
+                val deadline = System.nanoTime() + 15_000_000_000L
+                while (recording.get() && pcm.size() < captureBytes && System.nanoTime() < deadline) {
+                    val n = recorder.read(buffer, 0, minOf(buffer.size, captureBytes - pcm.size()))
                     if (n > 0) pcm.write(buffer, 0, n)
                     else if (n < 0) { error = "AudioRecord read error: $n"; break }
                 }
@@ -112,6 +115,7 @@ class MainActivity : Activity() {
                     else try { saveWav(pcm.toByteArray(), chosen.first) } catch (e: Exception) { "Save failed: ${e.message}" }
                 runOnUiThread {
                     toggle.text = "Start 10-second recording"
+                    toggle.isEnabled = true
                     source.isEnabled = true
                     status.text = outcome
                 }
@@ -119,17 +123,18 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun stopCapture() { recording.set(false) }
+    private fun stopCapture() {
+        recording.set(false)
+        toggle.isEnabled = false
+    }
 
     private fun saveWav(pcm: ByteArray, label: String): String {
         val filename = "clarifae_${label}_${System.currentTimeMillis()}.wav"
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, filename)
             put(MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
-            if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/ClarifaeTest")
-                put(MediaStore.Audio.Media.IS_PENDING, 1)
-            }
+            put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/ClarifaeTest")
+            put(MediaStore.Audio.Media.IS_PENDING, 1)
         }
         val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
         val uri = contentResolver.insert(collection, values) ?: error("MediaStore insert failed")
@@ -151,9 +156,7 @@ class MainActivity : Activity() {
                 stream.write(header.array())
                 stream.write(pcm)
             } ?: error("Cannot open output stream")
-            if (Build.VERSION.SDK_INT >= 29) {
-                contentResolver.update(uri, ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }, null, null)
-            }
+            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }, null, null)
         } catch (e: Exception) {
             contentResolver.delete(uri, null, null)
             throw e
@@ -161,8 +164,8 @@ class MainActivity : Activity() {
         return "Saved $filename — compare with module OFF/ON and a separate app."
     }
 
-    override fun onDestroy() {
-        recording.set(false)
-        super.onDestroy()
+    override fun onStop() {
+        if (recording.get()) stopCapture()
+        super.onStop()
     }
 }

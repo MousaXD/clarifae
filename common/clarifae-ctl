@@ -30,14 +30,14 @@ validate() {
 have_lib() {
   [ -f "/system/$1/soundfx/libclarifae.so" ] && return 0
   [ -f "/vendor/$1/soundfx/libclarifae.so" ] && return 0
-  [ -f "${MODULE_DIR:-/data/adb/modules/clarifae}/system/$1/soundfx/libclarifae.so" ]
+  [ -f "$MODULE_DIR/system/vendor/$1/soundfx/libclarifae.so" ] ||
+    [ -f "$MODULE_DIR/system/$1/soundfx/libclarifae.so" ]
 }
 
 cmd_set() {
   k="$1"; v="$2"
   validate "$k" "$v" || { echo "invalid: $k=$v" >&2; return 1; }
-  conf_set "$k" "$v"
-  _setp "persist.clarifae.$k" "$v"
+  conf_set "$k" "$v" && publish_config_key "$k" "$v" || return 1
   clarifae_log "set $k=$v"
   echo "$k=$v"
 }
@@ -99,13 +99,13 @@ cmd_status() {
   echo "  hp/agc  : $(conf_get highpass)/$(conf_get autogain)"
   have_lib lib64 && echo "  lib64   : installed" || echo "  lib64   : missing"
   have_lib lib   && echo "  lib32   : installed" || echo "  lib32   : (not installed)"
-  is_audio_effects_patched && echo "  xml     : patched" || echo "  xml     : NOT patched"
+  is_audio_effects_patched && echo "  config  : staged" || echo "  config  : missing overlay"
   pidof audioserver >/dev/null 2>&1 && echo "  audiosrv: running" || echo "  audiosrv: stopped"
   dumpsys media.audio_flinger 2>/dev/null | grep -qi clarifae \
-    && echo "  effect  : LOADED" || echo "  effect  : not detected (reopen capture / restart-audio)"
+    && echo "  effect  : AudioFlinger reference found" || echo "  effect  : no AudioFlinger reference (check during capture)"
 }
 
-cmd_apply()  { conf_init; prop_sync; echo "applied"; }
+cmd_apply()  { conf_init && prop_sync && echo "applied"; }
 cmd_reset()  { clarifae_defaults > "$CONFIG"; prop_sync; echo "reset to defaults"; }
 
 cmd_restart_audio() {
