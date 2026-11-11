@@ -1,0 +1,65 @@
+name: Android APK and module
+on:
+  push:
+    branches: [main, 'feat/android-companion-external-mic-validation']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  companion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK components
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Compile and lint
+        working-directory: android-companion
+        run: gradle --no-daemon :app:assembleDebug :app:lintDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clarifae-mic-test-debug
+          path: android-companion/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  module:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Android NDK
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;27.3.13750724'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.3.13750724" >> "$GITHUB_ENV"
+      - name: Download and verify RNNoise source and model
+        run: |
+          curl --fail --location --retry 3 --output rnnoise-0.2.tar.gz \
+            https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
+          echo '90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37  rnnoise-0.2.tar.gz' | sha256sum -c -
+      - name: Verify installer and controls
+        run: |
+          python3 tests/test_effects_config.py
+          python3 tests/test_module_config.py
+      - name: Build and package
+        run: |
+          ./build.sh
+          bash tests/test_native.sh
+          ./scripts/package.sh
+          python3 tests/test_module_zip.py dist/clarifae-v*.zip
+          ./scripts/package.sh stock
+          python3 tests/test_stock_zip.py dist/clarifae-stock-v*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clarifae-root-module
+          path: dist/clarifae-*.zip
+          if-no-files-found: error

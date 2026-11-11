@@ -23,3 +23,5 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+android-companion/.gradle/
+android-companion/local.properties

@@ -25,7 +25,7 @@ file(GLOB RNN_SRCS "${RNNOISE_DIR}/src/*.c")
 list(FILTER RNN_SRCS EXCLUDE REGEX "(dump_features|dump_rnnoise_tables|write_weights)")
 
 if(NOT RNN_SRCS MATCHES "rnnoise_data")
-  message(WARNING
+  message(FATAL_ERROR
     "rnnoise_data.c missing — run scripts/fetch_deps.sh (download_model.sh) to "
     "fetch the trained weights, or the link step will fail.")
 endif()
@@ -59,7 +59,7 @@ target_compile_options(clarifae PRIVATE
 # by HAVE_CONFIG_H, which we leave undefined).
 target_compile_definitions(clarifae PRIVATE RNNOISE_BUILD)
 
-target_link_options(clarifae PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL)
+target_link_options(clarifae PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,--no-undefined)
 
 find_library(LOG_LIB log)
 target_link_libraries(clarifae ${LOG_LIB} m)

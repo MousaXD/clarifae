@@ -102,9 +102,9 @@ verification steps.
 ```
 
 Configuration flows: **WebUI → `clarifae-ctl` → `config.conf` → `persist.clarifae.*` →
-effect**. The effect detects a property change (via the property serial) and reloads
-parameters / re-opens the backend on the next audio buffer, so most changes apply without
-a reboot. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+effect**. Each active session refreshes its properties roughly four times per second,
+so most settings apply during recording. Routing changes take effect after installing
+the module again and rebooting. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## Configuration reference
 
@@ -115,13 +115,13 @@ and is mirrored to system properties the effect reads:
 |---|---|---|---|
 | `enabled`      | `0` / `1` | `1` | Master on/off (bypass = passthrough) |
 | `in_enabled`   | `0` / `1` | `1` | Clean the **microphone** (input) |
-| `out_enabled`  | `0` / `1` | `1` | Clean **playback** (output) |
+| `out_enabled`  | `0` / `1` | `0` | Clean **playback** (output) |
 | `mode`         | `1` / `2` / `3` | `1` | RNNoise / DTLN / DeepFilterNet |
 | `strength`     | `0`–`100` | `70` | Wet/dry blend for the **mic** |
 | `out_strength` | `0`–`100` | `60` | Wet/dry blend for **playback** (lower for music) |
 | `atten_db`     | `0`–`60` | `24` | Max suppression depth (protects tone) |
 | `vad`          | `0`–`100` | `50` | Voice-activity sensitivity (gate / auto-gain) |
-| `targets`      | csv of `mic,voice_comm,camcorder,voice_rec` | `mic,voice_comm` | Capture sources (input) |
+| `targets`      | csv of `mic,voice_comm,camcorder,voice_rec` | `mic,voice_comm,camcorder` | Capture sources (input) |
 | `out_targets`  | csv of `music,voice_call,ring,alarm,notification,system` | `music,voice_call` | Playback streams (output) |
 | `highpass`     | `0` / `1` | `1` | DC/rumble high-pass pre-filter |
 | `autogain`     | `0` / `1` | `0` | Gentle make-up gain on speech |
@@ -148,10 +148,9 @@ clarifae-ctl version
 
 ## Limitations & caveats
 
-- **Auto-attach is device-dependent.** It edits the device's `audio_effects.xml` via an
-  overlay. Some vendors use non-standard formats/locations; if patching fails the library is
-  still installed and you can attach it manually (see
-  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
+- **Auto-attach is device-dependent.** The installer stages a legacy/HIDL effect
+  configuration through a systemless overlay. The [capture diagnostic](docs/HYPEROS_COMPATIBILITY.md)
+  reports the audio effects factory, mount visibility, and whether the vendor HAL sends PCM to Clarifae.
 - **Not every app/stream gets cleaned.** Effects apply per *audio source* (input) and per
   *stream type* (output). Apps using their own DSP, a raw/`unprocessed` source, direct/offload
   output, or exotic routes may bypass it. New sessions pick up changes; some need a `restart-audio`.
@@ -163,7 +162,7 @@ clarifae-ctl version
   `sepolicy.rule` is included for stricter devices.
 - **DTLN/DeepFilterNet are experimental** and require extra runtimes/models; without them
   Clarifae uses RNNoise.
-- Real-time enhancement adds a small fixed latency (~10 ms for RNNoise + resampler).
+- Real-time enhancement adds a small fixed latency (about 30 ms for RNNoise before Android routing latency).
 
 ## Licensing & credits
 

@@ -10,19 +10,6 @@ done
 
 jbool() { [ "$1" = "1" ] && echo true || echo false; }
 
-validate() {
-  k="$1"; v="$2"
-  case "$k" in
-    enabled|in_enabled|out_enabled|highpass|autogain) case "$v" in 0|1) return 0;; *) return 1;; esac ;;
-    mode)     case "$v" in 1|2|3) return 0;; *) return 1;; esac ;;
-    loglevel) case "$v" in 0|1|2|3) return 0;; *) return 1;; esac ;;
-    strength|out_strength|vad) { [ "$v" -ge 0 ] && [ "$v" -le 100 ]; } 2>/dev/null ;;
-    atten_db)     { [ "$v" -ge 0 ] && [ "$v" -le 60  ]; } 2>/dev/null ;;
-    targets|out_targets)  return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # $1 = lib | lib64. Check the mounted system/vendor overlays AND the module's
 # own staging dir — the WebUI's exec mount namespace may not have the systemless
 # overlay applied, so /system/... can read as absent even though audioserver
@@ -30,16 +17,34 @@ validate() {
 have_lib() {
   [ -f "/system/$1/soundfx/libclarifae.so" ] && return 0
   [ -f "/vendor/$1/soundfx/libclarifae.so" ] && return 0
-  [ -f "${MODULE_DIR:-/data/adb/modules/clarifae}/system/$1/soundfx/libclarifae.so" ]
+  [ -f "$MODULE_DIR/system/vendor/$1/soundfx/libclarifae.so" ] ||
+    [ -f "$MODULE_DIR/system/$1/soundfx/libclarifae.so" ]
 }
 
-cmd_set() {
-  k="$1"; v="$2"
-  validate "$k" "$v" || { echo "invalid: $k=$v" >&2; return 1; }
-  conf_set "$k" "$v"
-  _setp "persist.clarifae.$k" "$v"
-  clarifae_log "set $k=$v"
-  echo "$k=$v"
+write_settings() {
+  conf_write "$@" || return 1
+  result=0
+  for setting do
+    publish_config_key "${setting%%=*}" "${setting#*=}" || result=1
+  done
+  if [ "$result" != 0 ]; then
+    clarifae_log "settings saved; property publish incomplete"
+    echo "Settings saved. Audio property update failed. Use Apply to retry." >&2
+    return 1
+  fi
+  printf '%s\n' "$@"
+}
+
+cmd_set_many() {
+  [ "$#" -gt 0 ] || return 1
+  for setting do
+    case "$setting" in *=*) ;; *) return 1 ;; esac
+    validate_config_value "${setting%%=*}" "${setting#*=}" || {
+      echo "Invalid value for ${setting%%=*}" >&2
+      return 1
+    }
+  done
+  with_config_lock write_settings "$@"
 }
 
 cmd_get_json() {
@@ -72,7 +77,7 @@ cmd_status_json() {
            [ -f /data/adb/clarifae/models/dtln/model_2.tflite ] && mdtln=1
   mdf=0;   ls /data/adb/clarifae/models/df/* >/dev/null 2>&1 && mdf=1
   asrv=0;  pidof audioserver >/dev/null 2>&1 && asrv=1
-  load=0;  dumpsys media.audio_flinger 2>/dev/null | grep -qi clarifae && load=1
+  load=0;  dumpsys -t 3 media.audio_flinger 2>/dev/null | grep -qi clarifae && load=1
   printf '{'
   printf '"enabled":%s,'    "$(jbool "$(conf_get enabled)")"
   printf '"in_enabled":%s,"out_enabled":%s,' "$(jbool "$(conf_get in_enabled)")" "$(jbool "$(conf_get out_enabled)")"
@@ -99,19 +104,24 @@ cmd_status() {
   echo "  hp/agc  : $(conf_get highpass)/$(conf_get autogain)"
   have_lib lib64 && echo "  lib64   : installed" || echo "  lib64   : missing"
   have_lib lib   && echo "  lib32   : installed" || echo "  lib32   : (not installed)"
-  is_audio_effects_patched && echo "  xml     : patched" || echo "  xml     : NOT patched"
+  is_audio_effects_patched && echo "  config  : staged" || echo "  config  : missing overlay"
   pidof audioserver >/dev/null 2>&1 && echo "  audiosrv: running" || echo "  audiosrv: stopped"
-  dumpsys media.audio_flinger 2>/dev/null | grep -qi clarifae \
-    && echo "  effect  : LOADED" || echo "  effect  : not detected (reopen capture / restart-audio)"
+  dumpsys -t 3 media.audio_flinger 2>/dev/null | grep -qi clarifae \
+    && echo "  effect  : AudioFlinger reference found" || echo "  effect  : no AudioFlinger reference (check during capture)"
 }
 
-cmd_apply()  { conf_init; prop_sync; echo "applied"; }
-cmd_reset()  { clarifae_defaults > "$CONFIG"; prop_sync; echo "reset to defaults"; }
+cmd_apply() { with_config_lock prop_sync && echo "applied"; }
+
+reset_settings() {
+  # Every shipped default is a single whitespace-free key=value argument.
+  set -- $(clarifae_defaults)
+  write_settings "$@" >/dev/null
+}
+
+cmd_reset() { with_config_lock reset_settings && echo "reset to defaults"; }
 
 cmd_restart_audio() {
-  command -v killall >/dev/null 2>&1 && killall audioserver 2>/dev/null
-  setprop ctl.restart audioserver 2>/dev/null
-  stop audioserver 2>/dev/null; start audioserver 2>/dev/null
+  setprop ctl.restart audioserver || return 1
   clarifae_log "audioserver restart requested"
   echo "audioserver restart requested"
 }
@@ -124,8 +134,8 @@ cmd_log() {
 case "$1" in
   get)           conf_init; cat "$CONFIG" ;;
   get-json)      cmd_get_json ;;
-  set)           shift; cmd_set "$1" "$2" ;;
-  set-many)      shift; rc=0; for kv in "$@"; do cmd_set "${kv%%=*}" "${kv#*=}" || rc=1; done; exit $rc ;;
+  set)           [ "$#" -eq 3 ] || exit 1; cmd_set_many "$2=$3" ;;
+  set-many)      shift; cmd_set_many "$@" ;;
   apply)         cmd_apply ;;
   status)        cmd_status ;;
   status-json)   cmd_status_json ;;

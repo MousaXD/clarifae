@@ -90,17 +90,16 @@ it falls back to RNNoise.
 ```
 WebUI ──ksu.exec──▶ clarifae-ctl ──▶ /data/adb/clarifae/config.conf  (source of truth)
                               │
-                              └──▶ resetprop -p persist.clarifae.<key>  (runtime channel)
+                              └──▶ persist.clarifae.* and persist.vendor.clarifae.*
                                                    │
-                              effect.c: clarifae_config_changed()  (cheap serial compare)
+                              effect.c: per-session settings refresh  (roughly every 250 ms)
                                                    │ on change
                               clarifae_config_load() → set_params / re-open backend
 ```
 
-System **properties** are the live channel because SELinux forbids `audioserver` from reading
-`/data/adb`. The effect polls a sum of the per-property serials each buffer (O(keys), no I/O)
-and only reloads when something changed. Mode changes re-open the backend; parameter changes
-just call `set_params`.
+System properties let framework and vendor audio hosts read the same settings.
+Each session refreshes settings independently and applies changed values. A mode
+change reopens the backend.
 
 ## audio_effects.xml integration (`common/functions.sh`)
 
@@ -122,9 +121,8 @@ Because it's an overlay, the original file is never modified — removing the mo
 ## Resampling & latency (`native/resampler.c`)
 
 A continuous linear-interpolation resampler with one sample of carried history joins
-consecutive `process()` calls seamlessly. RNNoise's 480-frame (10 ms) buffering plus the
-resampler is the dominant latency (~10–12 ms); the design favors low latency over the last dB
-of stop-band rejection, which suits a realtime voice path.
+consecutive `process()` calls seamlessly. RNNoise adds about 30 ms before Android routing latency,
+including the overlap-add, lookahead, and the fixed output queue.
 
 ## Module layout
 

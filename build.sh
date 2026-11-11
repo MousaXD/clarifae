@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — cross-compile libclarifae.so for each Android ABI with the NDK and
-# stage it into lib/<abi>/ and system/lib(64)/soundfx/ ready for packaging.
+# stage it into lib/<abi>/ ready for packaging.
 #
 #   ABIS="arm64-v8a armeabi-v7a x86_64" ./build.sh
 #   CLARIFAE_WITH_DTLN=ON TFLITE_DIR=/path/to/tflite ./build.sh   # optional
@@ -27,7 +27,8 @@ TOOLCHAIN="$NDK/build/cmake/android.toolchain.cmake"
 [ -f "$TOOLCHAIN" ] || { echo "ERROR: toolchain not found: $TOOLCHAIN"; exit 1; }
 
 # --- ensure RNNoise is present ---
-if [ ! -f "$NATIVE/third_party/rnnoise/include/rnnoise.h" ]; then
+if [ ! -f "$NATIVE/third_party/rnnoise/include/rnnoise.h" ] ||
+   [ ! -f "$NATIVE/third_party/rnnoise/src/rnnoise_data.c" ]; then
   echo ">> Fetching RNNoise..."
   "$HERE/scripts/fetch_deps.sh"
 fi
@@ -49,6 +50,7 @@ for ABI in $ABIS; do
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
         -DANDROID_ABI="$ABI" \
         -DANDROID_PLATFORM="android-$API" \
+        -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
         -DCMAKE_BUILD_TYPE=Release \
         "${EXTRA[@]}"
   cmake --build "$BUILD" -j "$JOBS"
@@ -57,9 +59,7 @@ for ABI in $ABIS; do
   [ -f "$SO" ] || { echo "ERROR: $SO not produced"; exit 1; }
   "$NDK"/toolchains/llvm/prebuilt/*/bin/llvm-strip --strip-unneeded "$SO" 2>/dev/null || true
 
-  # Stage per-ABI only. customize.sh installs the one matching the device into
-  # system/lib(64)/soundfx at flash time (both 64-bit ABIs share lib64, so we
-  # must NOT pre-stage system/ here — they would collide).
+  # customize.sh selects the device ABI and soundfx directory at install time.
   mkdir -p "$HERE/lib/$ABI"
   cp -f "$SO" "$HERE/lib/$ABI/libclarifae.so"
   echo "   -> lib/$ABI/libclarifae.so  ($(du -h "$SO" | cut -f1))"

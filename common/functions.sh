@@ -6,16 +6,12 @@
 CLARIFAE_DIR=/data/adb/clarifae
 CONFIG="$CLARIFAE_DIR/config.conf"
 LOGFILE="$CLARIFAE_DIR/clarifae.log"
-PATCH_MARK="$CLARIFAE_DIR/audio_effects.patched"   # holds the patched file path
-BACKUP="$CLARIFAE_DIR/audio_effects.backup"
+PATCH_MARK="$CLARIFAE_DIR/audio_effects.patched"   # holds the target config path
 MODULE_DIR=/data/adb/modules/clarifae              # always present post-boot, mount-namespace independent
 
-CLARIFAE_VERSION="v1.1.2"
+CLARIFAE_VERSION="v1.2.0"
 EFFECT_UUID="c1a71fae-0001-4a5e-9b10-43578768aaf3"       # input  (capture pre-proc)
 EFFECT_UUID_OUT="c1a71fae-0002-4a5e-9b10-43578768aaf3"   # output (playback post-proc)
-LIB_NAME="clarifae"
-EFFECT_NAME="clarifae_ns"
-OUT_EFFECT_NAME="clarifae_out"
 
 CLARIFAE_KEYS="enabled in_enabled out_enabled mode strength out_strength atten_db vad targets out_targets highpass autogain loglevel"
 
@@ -23,13 +19,13 @@ clarifae_defaults() {
   cat <<'EOF'
 enabled=1
 in_enabled=1
-out_enabled=1
+out_enabled=0
 mode=1
 strength=70
 out_strength=60
 atten_db=24
 vad=50
-targets=mic,voice_comm
+targets=mic,voice_comm,camcorder
 out_targets=music,voice_call
 highpass=1
 autogain=0
@@ -43,29 +39,99 @@ clarifae_log() {
 }
 
 conf_init() {
-  mkdir -p "$CLARIFAE_DIR" 2>/dev/null
-  [ -f "$CONFIG" ] || clarifae_defaults > "$CONFIG"
+  mkdir -p "$CLARIFAE_DIR" || return 1
+  [ -f "$CONFIG" ] || (umask 077; set -C; clarifae_defaults > "$CONFIG") 2>/dev/null || [ -f "$CONFIG" ]
 }
 
-# conf_get KEY -> value (falls back to default)
-conf_get() {
-  _k="$1"; _v=""
-  [ -f "$CONFIG" ] && _v=$(grep "^$_k=" "$CONFIG" 2>/dev/null | tail -n1 | cut -d= -f2-)
-  [ -z "$_v" ] && _v=$(clarifae_defaults | grep "^$_k=" | cut -d= -f2-)
-  printf '%s' "$_v"
+valid_number() {
+  case "$1" in
+    0|[1-9]|[1-9][0-9]|100) [ "$1" -le "$2" ] ;;
+    *) return 1 ;;
+  esac
 }
 
-# conf_set KEY VALUE
-conf_set() {
-  _k="$1"; _v="$2"
-  conf_init
-  if grep -q "^$_k=" "$CONFIG" 2>/dev/null; then
-    _tmp="$CONFIG.tmp.$$"
-    sed "s|^$_k=.*|$_k=$_v|" "$CONFIG" > "$_tmp" && mv "$_tmp" "$CONFIG"
+valid_targets() (
+  case "$2" in "" ) return 0 ;; ,*|*,|*,,*) return 1 ;; esac
+  set -f
+  IFS=,
+  for target in $2; do
+    case "$1:$target" in
+      targets:mic|targets:voice_comm|targets:camcorder|targets:voice_rec) ;;
+      out_targets:music|out_targets:media|out_targets:voice_call|out_targets:calls|out_targets:ring|out_targets:alarm|out_targets:notification|out_targets:notif|out_targets:system) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "${#2}" -le 63 ]
+)
+
+validate_config_value() {
+  case "$1" in
+    enabled|in_enabled|out_enabled|highpass|autogain) [ "$2" = 0 ] || [ "$2" = 1 ] ;;
+    mode) case "$2" in 1|2|3) return 0 ;; *) return 1 ;; esac ;;
+    loglevel) valid_number "$2" 3 ;;
+    strength|out_strength|vad) valid_number "$2" 100 ;;
+    atten_db) valid_number "$2" 60 ;;
+    targets|out_targets) valid_targets "$1" "$2" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Preserve an explicitly empty route list and recover from invalid old values.
+conf_get() (
+  key="$1"
+  if value=$(awk -v key="$key" '
+    index($0, key "=") == 1 { value = substr($0, length(key) + 2); found = 1 }
+    END { if (!found) exit 1; print value }
+  ' "$CONFIG" 2>/dev/null) && validate_config_value "$key" "$value"; then
+    printf '%s' "$value"
   else
-    echo "$_k=$_v" >> "$CONFIG"
+    clarifae_defaults | awk -v key="$key" 'index($0, key "=") == 1 { printf "%s", substr($0, length(key) + 2) }'
   fi
-}
+)
+
+# Serialize writers across the WebUI, command line and boot service.
+with_config_lock() (
+  mkdir -p "$CLARIFAE_DIR" || return 1
+  umask 077
+  exec 9>"$CLARIFAE_DIR/config.lock" || return 1
+  if command -v flock >/dev/null 2>&1; then
+    flock -x 9 || return 1
+  else
+    locked=0
+    for busybox in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
+      if [ -x "$busybox" ] && "$busybox" flock -x 9; then
+        locked=1
+        break
+      fi
+    done
+    [ "$locked" = 1 ] || { echo "Could not lock Clarifae configuration" >&2; return 1; }
+  fi
+  "$@"
+)
+
+conf_write() (
+  conf_init || return 1
+  tmp=$(mktemp "$CONFIG.XXXXXX") || return 1
+  trap 'rm -f "$tmp"' EXIT
+  awk -v changes="$(printf '%s\n' "$@")" '
+    BEGIN {
+      count = split(changes, lines, "\n")
+      for (i = 1; i <= count; i++) {
+        split(lines[i], pair, "=")
+        order[i] = pair[1]
+        replacement[pair[1]] = lines[i]
+      }
+    }
+    {
+      split($0, pair, "=")
+      if (!(pair[1] in replacement)) print
+    }
+    END {
+      for (i = 1; i <= count; i++)
+        if (!written[order[i]]++) print replacement[order[i]]
+    }
+  ' "$CONFIG" > "$tmp" && mv -f "$tmp" "$CONFIG"
+)
 
 # write a single property (persisted)
 _setp() {
@@ -76,11 +142,21 @@ _setp() {
   fi
 }
 
-# push every config key to its persist.clarifae.* property
+# Keep both the framework and vendor HAL property namespaces in sync.
+publish_config_key() (
+  result=0
+  _setp "persist.clarifae.$1" "$2" || result=1
+  _setp "persist.vendor.clarifae.$1" "$2" || result=1
+  return "$result"
+)
+
+# Publish the saved settings at boot and when explicitly reapplied.
 prop_sync() {
-  for _k in $CLARIFAE_KEYS; do
-    _setp "persist.clarifae.$_k" "$(conf_get "$_k")"
+  sync_failed=0
+  for _prop_key in $CLARIFAE_KEYS; do
+    publish_config_key "$_prop_key" "$(conf_get "$_prop_key")" || sync_failed=1
   done
+  [ "$sync_failed" = 0 ] || { clarifae_log "property sync incomplete"; return 1; }
   clarifae_log "props synced from config"
 }
 
@@ -95,13 +171,30 @@ mode_name() {
 
 # ---- audio_effects.xml / .conf integration ----
 
-find_audio_effects_file() {
-  for _f in /vendor/etc/audio_effects.xml /odm/etc/audio_effects.xml \
-            /system/etc/audio_effects.xml /vendor/etc/audio_effects.conf \
-            /system/etc/audio_effects.conf; do
-    [ -f "$_f" ] && { echo "$_f"; return 0; }
+find_audio_effects_xml() (
+  filename="$1"
+  _sku="$(getprop ro.boot.product.vendor.sku)"
+  case "$_sku" in
+    ''|*[!a-zA-Z0-9_.-]*) _sku_dir= ;;
+    *) _sku_dir="/vendor/etc/audio/sku_$_sku" ;;
+  esac
+  for _dir in /odm/etc $_sku_dir /vendor/etc /system/etc; do
+    _f="$_dir/$filename"
+    [ -r "$_f" ] && { echo "$_f"; return 0; }
   done
   return 1
+)
+
+find_audio_effects_file() {
+  find_audio_effects_xml audio_effects.xml && return 0
+  for _f in /vendor/etc/audio_effects.conf /system/etc/audio_effects.conf; do
+    [ -r "$_f" ] && { echo "$_f"; return 0; }
+  done
+  return 1
+}
+
+aidl_effect_factory_running() {
+  service check android.hardware.audio.effect.IFactory/default 2>/dev/null | grep -q ': found$'
 }
 
 # map a real partition path to the module overlay path (Magisk magic-mount)
@@ -154,118 +247,47 @@ map_out_targets() {
 }
 
 _patch_xml_file() {
-  _src="$1"; _dst="$2"; _in_streams="$3"; _out_streams="$4"
-  awk -v uuid_in="$EFFECT_UUID" -v uuid_out="$EFFECT_UUID_OUT" -v lib="$LIB_NAME" \
-      -v eff_in="$EFFECT_NAME" -v eff_out="$OUT_EFFECT_NAME" \
-      -v in_streams="$_in_streams" -v out_streams="$_out_streams" '
-    BEGIN {
-      lib_done=0; eff_done=0; pre_done=0; post_done=0; section=""; cur="";
-      ni=split(in_streams,  wi, " "); for (i=1;i<=ni;i++) if (wi[i]!="") hin[wi[i]]=0;
-      no=split(out_streams, wo, " "); for (i=1;i<=no;i++) if (wo[i]!="") hout[wo[i]]=0;
-    }
-    function emit_stream(t, e) {
-      print "        <stream type=\"" t "\">";
-      print "            <apply effect=\"" e "\"/>";
-      print "        </stream>";
-    }
-    function emit_pre_unhandled(   i)  { for (i=1;i<=ni;i++) if (wi[i]!="" && hin[wi[i]]==0)  { emit_stream(wi[i], eff_in);  hin[wi[i]]=1 } }
-    function emit_post_unhandled(  i)  { for (i=1;i<=no;i++) if (wo[i]!="" && hout[wo[i]]==0) { emit_stream(wo[i], eff_out); hout[wo[i]]=1 } }
-    /<\/libraries>/ && !lib_done {
-      print "        <library name=\"" lib "\" path=\"libclarifae.so\"/>"; lib_done=1
-    }
-    /<\/effects>/ && !eff_done {
-      print "        <effect name=\"" eff_in  "\" library=\"" lib "\" uuid=\"" uuid_in  "\"/>";
-      print "        <effect name=\"" eff_out "\" library=\"" lib "\" uuid=\"" uuid_out "\"/>";
-      eff_done=1
-    }
-    /<preprocess>/  { section="pre" }
-    /<postprocess>/ { section="post" }
-    {
-      if (section!="" && /<stream/ && match($0, /type="[^"]*"/))
-        cur = substr($0, RSTART + 6, RLENGTH - 7);
-    }
-    /<\/stream>/ {
-      if (cur != "") {
-        if (section=="pre"  && (cur in hin)  && hin[cur]==0)  { print "            <apply effect=\"" eff_in  "\"/>"; hin[cur]=1 }
-        if (section=="post" && (cur in hout) && hout[cur]==0) { print "            <apply effect=\"" eff_out "\"/>"; hout[cur]=1 }
-      }
-      cur="";
-    }
-    /<\/preprocess>/  { emit_pre_unhandled();  pre_done=1;  section="" }
-    /<\/postprocess>/ { emit_post_unhandled(); post_done=1; section="" }
-    /<\/audio_effects_conf>/ {
-      if (!pre_done)  { print "    <preprocess>";  emit_pre_unhandled();  print "    </preprocess>";  pre_done=1 }
-      if (!post_done) { print "    <postprocess>"; emit_post_unhandled(); print "    </postprocess>"; post_done=1 }
-    }
-    { print }
-  ' "$_src" > "$_dst" 2>/dev/null
-  [ -s "$_dst" ] && grep -q "clarifae" "$_dst"
+  awk -v uuid_in="$EFFECT_UUID" -v uuid_out="$EFFECT_UUID_OUT" \
+      -v in_streams="$3" -v out_streams="$4" -f "$5" "$1" > "$2"
 }
 
 _patch_conf_file() {
-  _src="$1"; _dst="$2"; _in_streams="$3"; _out_streams="$4"
-  awk -v uuid_in="$EFFECT_UUID" -v uuid_out="$EFFECT_UUID_OUT" -v lib="$LIB_NAME" \
-      -v eff_in="$EFFECT_NAME" -v eff_out="$OUT_EFFECT_NAME" \
-      -v in_streams="$_in_streams" -v out_streams="$_out_streams" '
-    BEGIN { lib_done=0; eff_done=0 }
-    { print }
-    /libraries[ \t]*\{/ && !lib_done { print "  " lib " { path libclarifae.so }"; lib_done=1 }
-    /effects[ \t]*\{/   && !eff_done {
-      print "  " eff_in  " { library " lib " uuid " uuid_in  " }";
-      print "  " eff_out " { library " lib " uuid " uuid_out " }";
-      eff_done=1
-    }
-    /pre_processing[ \t]*\{/ {
-      n=split(in_streams, ai, " ");
-      for (i=1;i<=n;i++) if (ai[i]!="") print "  " ai[i] " { " eff_in " {} }";
-    }
-    /post_processing[ \t]*\{/ {
-      n=split(out_streams, ao, " ");
-      for (i=1;i<=n;i++) if (ao[i]!="") print "  " ao[i] " { " eff_out " {} }";
-    }
-  ' "$_src" > "$_dst" 2>/dev/null
-  [ -s "$_dst" ] && grep -q "clarifae" "$_dst"
+  awk -v uuid_in="$EFFECT_UUID" -v uuid_out="$EFFECT_UUID_OUT" \
+      -v in_streams="$3" -v out_streams="$4" -v lib_path="$6" -f "$5" "$1" > "$2"
 }
 
-# patch_audio_effects MODPATH -> 0 ok / 1 fail. Writes overlay + backup + marker.
-patch_audio_effects() {
-  _mp="$1"
-  _real="$(find_audio_effects_file)" || { clarifae_log "audio_effects file not found"; return 1; }
-  _streams="$(map_targets "$(conf_get targets)")"
-  _out_streams="$(map_out_targets "$(conf_get out_targets)")"
-  _overlay="$(overlay_path_for "$_mp" "$_real")"
+# patch_audio_effects MODPATH: stage a complete overlay atomically.
+patch_audio_effects() (
+  mp="$1"
+  lib_path="$2"
+  real="$(find_audio_effects_file)" || { clarifae_log "audio_effects file not found"; return 1; }
+  streams="$(map_targets "$(conf_get targets)")"
+  out_streams="$(map_out_targets "$(conf_get out_targets)")"
+  # Resolve vendor/ODM aliases so the file is staged on the owning partition.
+  resolved="$(readlink -f "$real")" && [ -n "$resolved" ] && real="$resolved"
+  case "$real" in /vendor/*|/odm/*|/system/*) ;; *) return 1 ;; esac
+  overlay="$(overlay_path_for "$mp" "$real")"
 
-  if grep -q "clarifae" "$_real" 2>/dev/null; then
-    clarifae_log "audio_effects already references clarifae ($_real)"
-    echo "$_real" > "$PATCH_MARK"
-    return 0
-  fi
-
-  mkdir -p "$(dirname "$_overlay")" 2>/dev/null
-  cp -f "$_real" "$BACKUP" 2>/dev/null
-
-  case "$_real" in
-    *.xml)  _patch_xml_file  "$_real" "$_overlay" "$_streams" "$_out_streams" ;;
-    *.conf) _patch_conf_file "$_real" "$_overlay" "$_streams" "$_out_streams" ;;
+  mkdir -p "$(dirname "$overlay")" || return 1
+  tmp="$overlay.tmp"
+  case "$real" in
+    *.xml)  _patch_xml_file "$real" "$tmp" "$streams" "$out_streams" "$mp/common/patch-effects.awk" ;;
+    *.conf) _patch_conf_file "$real" "$tmp" "$streams" "$out_streams" "$mp/common/patch-effects-conf.awk" "$lib_path" ;;
     *) return 1 ;;
   esac
 
-  if [ $? -eq 0 ]; then
-    chmod 0644 "$_overlay" 2>/dev/null
-    echo "$_overlay" > "$PATCH_MARK"
-    clarifae_log "patched audio_effects: $_real -> $_overlay (in:$_streams | out:$_out_streams)"
+  if [ $? -eq 0 ] && chmod 0644 "$tmp" && mv -f "$tmp" "$overlay"; then
+    printf '%s\n' "$real" > "$PATCH_MARK" || return 1
+    clarifae_log "staged audio effects: $real -> $overlay (in:$streams | out:$out_streams)"
     return 0
   fi
-  clarifae_log "FAILED to patch $_real"
+  rm -f "$tmp"
+  clarifae_log "FAILED to patch $real"
   return 1
-}
+)
 
 is_audio_effects_patched() {
-  _f="$(find_audio_effects_file)" || return 1
-  # Mounted (real) location — only reflects the patch where the systemless
-  # overlay is applied. The WebUI's exec namespace may not see it.
-  grep -q "clarifae" "$_f" 2>/dev/null && return 0
-  # Namespace-independent fallback: the staged overlay in the module dir.
+  _f="$(cat "$PATCH_MARK" 2>/dev/null)" || return 1
   _ov="$(overlay_path_for "$MODULE_DIR" "$_f")"
-  [ -f "$_ov" ] && grep -q "clarifae" "$_ov" 2>/dev/null
+  [ -f "$_ov" ] && grep -q "$EFFECT_UUID" "$_ov" 2>/dev/null
 }

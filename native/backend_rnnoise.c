@@ -10,9 +10,8 @@
  *     -> rnnoise_process_frame -> wet/dry mix bounded by the attenuation limit
  *     -> [optional auto-gain] -> resample back to session rate -> reinterleave
  *
- * The 480-frame buffering plus resampling introduces a small fixed latency
- * (~10 ms + resampler). Until the pipeline primes, output falls back to the dry
- * input so there are no clicks.
+ * RNNoise's overlap-add and lookahead delay the signal by 20 ms. Prime the
+ * output queue with another 10 ms so callback sizes do not change its latency.
  *
  * Also hosts clarifae_backend_for_mode() (the dispatcher), since rnnoise is the
  * one backend always linked in.
@@ -30,22 +29,23 @@
 
 #define RNN_RATE      48000
 #define MAX_FRAME     480     /* RNNoise frame size (10 ms @ 48 kHz) */
-#define RING_CAP      16384
+#define RING_CAP      4096
 #define IN_STEP       256     /* session-rate samples resampled per inner step */
-#define SCRATCH_CAP   4096
+#define SCRATCH_CAP   2048
 
 typedef struct {
     DenoiseState* st;
     resampler_t*  up;     /* session_rate -> 48000 */
     resampler_t*  down;   /* 48000 -> session_rate */
     ringbuf_t     in48;   /* 48k samples awaiting framing */
-    ringbuf_t     out48;  /* 48k processed samples awaiting downsample */
     ringbuf_t     outq;   /* session-rate processed samples awaiting output */
     float         hp_x1;  /* high-pass history */
     float         hp_y1;
     float         agc_g;  /* auto-gain smoothed gain */
     float         frame_in[MAX_FRAME];
     float         frame_out[MAX_FRAME];
+    float         dry_delay[2][MAX_FRAME]; /* match RNNoise 0.2 overlap-add/lookahead */
+    int           dry_index;
 } rnn_chan_t;
 
 typedef struct {
@@ -64,7 +64,7 @@ typedef struct {
     /* shared scratch (audio thread only) */
     float scratch48[SCRATCH_CAP];
     float scratchSr[SCRATCH_CAP];
-    float dch[8192];          /* one channel's deinterleaved session samples */
+    float dch[IN_STEP];       /* one channel's deinterleaved session samples */
 } rnn_state_t;
 
 static inline float clampf(float v, float lo, float hi) {
@@ -76,9 +76,19 @@ static void chan_free(rnn_chan_t* c) {
     if (c->up)   rs_destroy(c->up);
     if (c->down) rs_destroy(c->down);
     rb_free(&c->in48);
-    rb_free(&c->out48);
     rb_free(&c->outq);
     memset(c, 0, sizeof(*c));
+}
+
+static void prime_output(rnn_chan_t* c, int sample_rate) {
+    static const float silence[IN_STEP];
+    /* Rounding and the interpolation endpoints need up to two extra samples. */
+    int remaining = (sample_rate + 99) / 100 + 2;
+    while (remaining > 0) {
+        int n = remaining < IN_STEP ? remaining : IN_STEP;
+        rb_write(&c->outq, silence, n);
+        remaining -= n;
+    }
 }
 
 static void* rnn_create(int sample_rate, int channels, char* err, int errlen) {
@@ -112,7 +122,7 @@ static void* rnn_create(int sample_rate, int channels, char* err, int errlen) {
         c->down = rs_create(RNN_RATE, sample_rate);
         c->agc_g = 1.0f;
         if (!c->st || !c->up || !c->down ||
-            rb_init(&c->in48, RING_CAP) || rb_init(&c->out48, RING_CAP) ||
+            rb_init(&c->in48, RING_CAP) ||
             rb_init(&c->outq, RING_CAP)) {
             snprintf(err, errlen, "oom channel %d", i);
             for (int j = 0; j <= i; j++) chan_free(&s->ch[j]);
@@ -120,6 +130,7 @@ static void* rnn_create(int sample_rate, int channels, char* err, int errlen) {
             free(s);
             return NULL;
         }
+        prime_output(c, sample_rate);
     }
 
     CLARIFAE_LOGI("rnnoise backend: %d Hz, %d ch, frame=%d", sample_rate, channels, s->frame);
@@ -143,8 +154,10 @@ static void rnn_reset(void* st) {
     for (int i = 0; i < s->channels; i++) {
         rnn_chan_t* c = &s->ch[i];
         rb_reset(&c->in48);
-        rb_reset(&c->out48);
         rb_reset(&c->outq);
+        prime_output(c, s->sample_rate);
+        memset(c->dry_delay, 0, sizeof(c->dry_delay));
+        c->dry_index = 0;
         rs_reset(c->up);
         rs_reset(c->down);
         c->hp_x1 = c->hp_y1 = 0.0f;
@@ -165,10 +178,12 @@ static void rnn_destroy(void* st) {
 static void process_frame(rnn_state_t* s, rnn_chan_t* c) {
     float vadprob = rnnoise_process_frame(c->st, c->frame_out, c->frame_in);
 
+    float* delayed = c->dry_delay[c->dry_index];
     float w = s->strength;
     float amax = s->atten_lin;       /* retained fraction floor */
     for (int i = 0; i < s->frame; i++) {
-        float dry = c->frame_in[i];
+        float dry = delayed[i];
+        delayed[i] = c->frame_in[i];
         float wet = c->frame_out[i];
         float mixed = dry + (wet - dry) * w;       /* wet/dry blend */
         /* bound suppression depth: never remove more than (1-amax)*|dry| */
@@ -179,6 +194,7 @@ static void process_frame(rnn_state_t* s, rnn_chan_t* c) {
         c->frame_out[i] = dry - removed;
     }
 
+    c->dry_index ^= 1;
     if (s->autogain) {
         float acc = 0.0f;
         for (int i = 0; i < s->frame; i++) acc += c->frame_out[i] * c->frame_out[i];
@@ -203,60 +219,39 @@ static int rnn_process(void* st, float* inout, int frames) {
     for (int ci = 0; ci < chn; ci++) {
         rnn_chan_t* c = &s->ch[ci];
 
-        /* 1. deinterleave this channel (chunked to bound dch[]) */
-        int off = 0;
-        while (off < frames) {
+        for (int off = 0; off < frames;) {
             int n = frames - off;
-            if (n > (int)(sizeof(s->dch) / sizeof(float))) n = (int)(sizeof(s->dch) / sizeof(float));
-            for (int i = 0; i < n; i++) s->dch[i] = inout[(size_t)(off + i) * chn + ci];
+            if (n > IN_STEP) n = IN_STEP;
 
-            /* 2. optional high-pass (DC / rumble removal) at session rate */
-            if (s->highpass) {
-                const float a = 0.995f;
-                for (int i = 0; i < n; i++) {
-                    float x = s->dch[i];
-                    float y = a * (c->hp_y1 + x - c->hp_x1);
+            for (int i = 0; i < n; i++) {
+                float x = inout[(size_t)(off + i) * chn + ci];
+                if (s->highpass) {
+                    float y = 0.995f * (c->hp_y1 + x - c->hp_x1);
                     c->hp_x1 = x;
                     c->hp_y1 = y;
-                    s->dch[i] = y;
+                    x = y;
                 }
+                s->dch[i] = x;
             }
 
-            /* 3. resample session-rate -> 48k in IN_STEP sub-blocks, buffer it */
-            int p = 0;
-            while (p < n) {
-                int m = n - p;
-                if (m > IN_STEP) m = IN_STEP;
-                int outn = 0;
-                rs_process(c->up, s->dch + p, m, s->scratch48, SCRATCH_CAP, &outn);
-                rb_write(&c->in48, s->scratch48, outn);
-                p += m;
+            int samples48;
+            rs_process(c->up, s->dch, n, s->scratch48, SCRATCH_CAP, &samples48);
+            rb_write(&c->in48, s->scratch48, samples48);
+            while (rb_avail(&c->in48) >= s->frame) {
+                rb_read(&c->in48, c->frame_in, s->frame);
+                process_frame(s, c);
+                int samples_out;
+                rs_process(c->down, c->frame_out, s->frame,
+                           s->scratchSr, SCRATCH_CAP, &samples_out);
+                rb_write(&c->outq, s->scratchSr, samples_out);
+            }
 
-                /* 4. drain whole 480-frames -> denoise -> stage at 48k */
-                while (rb_avail(&c->in48) >= s->frame) {
-                    rb_read(&c->in48, c->frame_in, s->frame);
-                    process_frame(s, c);
-                    rb_write(&c->out48, c->frame_out, s->frame);
-                }
-
-                /* 5. resample processed 48k -> session rate -> output queue */
-                while (rb_avail(&c->out48) >= s->frame) {
-                    rb_read(&c->out48, s->scratch48, s->frame);
-                    int dn = 0;
-                    rs_process(c->down, s->scratch48, s->frame, s->scratchSr, SCRATCH_CAP, &dn);
-                    rb_write(&c->outq, s->scratchSr, dn);
-                }
+            int available = rb_read(&c->outq, s->dch, n);
+            for (int i = 0; i < n; i++) {
+                float y = i < available ? s->dch[i] : 0.0f;
+                inout[(size_t)(off + i) * chn + ci] = clampf(y, -32768.0f, 32767.0f);
             }
             off += n;
-        }
-
-        /* 6. emit `frames` output samples; dry passthrough on under-run (prime) */
-        for (int i = 0; i < frames; i++) {
-            float v;
-            if (rb_read(&c->outq, &v, 1) == 1) {
-                inout[(size_t)i * chn + ci] = clampf(v, -32768.0f, 32767.0f);
-            }
-            /* else: leave the existing (dry) sample in place — startup priming */
         }
     }
     return 0;
