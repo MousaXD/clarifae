@@ -12,7 +12,7 @@
  *
  * Each pass hands PCM to the selected backend (rnnoise / dtln / deepfilternet).
  * Config is read live from persist.clarifae.* (see config.c) — changes from the
- * WebUI apply on the next buffer without a reboot. Gating is per side:
+ * WebUI apply on the next settings refresh. Gating is per side:
  * master `enabled` AND (`in_enabled` | `out_enabled`); strength is `strength`
  * for input and `out_strength` for output. When bypassed, audio passes through.
  */
@@ -38,6 +38,7 @@ typedef struct {
     int      host_enabled;   /* EFFECT_CMD_ENABLE/DISABLE */
     int      configured;
     int      session_id;
+    int      processing;
     int      processing_logged;
     size_t   frames_until_refresh;
     uint32_t sample_rate;
@@ -45,6 +46,7 @@ typedef struct {
     int      channels;
     uint8_t  in_format, out_format;
     uint8_t  in_access, out_access;
+    audio_buffer_t input_buffer, output_buffer;
 
     const clarifae_backend_t* backend;
     void*    bstate;
@@ -150,7 +152,10 @@ static int ensure_fbuf(clarifae_ctx_t* c, size_t need) {
 static int32_t ce_process(effect_handle_t self,
                           audio_buffer_t* in, audio_buffer_t* out) {
     clarifae_ctx_t* c = (clarifae_ctx_t*)self;
-    if (!c || !in || !out || !in->raw || !out->raw || !c->configured) return -EINVAL;
+    if (!c || !c->configured) return -EINVAL;
+    if (!in) in = &c->input_buffer;
+    if (!out) out = &c->output_buffer;
+    if (!in->raw || !out->raw) return -EINVAL;
 
     size_t frames = in->frameCount;
     if (out->frameCount < frames) frames = out->frameCount;
@@ -181,6 +186,10 @@ static int32_t ce_process(effect_handle_t self,
 
     /* ---- bypass: copy input to output (respecting accumulate) ---- */
     if (bypass) {
+        if (c->processing) {
+            c->processing = 0;
+            c->processing_logged = 0;
+        }
         size_t n = frames * (size_t)ch;
         if (c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
             if (c->out_access == EFFECT_BUFFER_ACCESS_ACCUMULATE)
@@ -201,6 +210,10 @@ static int32_t ce_process(effect_handle_t self,
 
     size_t n = frames * (size_t)ch;
     if (ensure_fbuf(c, n) != 0) return -ENOMEM;
+    if (!c->processing) {
+        c->backend->reset(c->bstate);
+        c->processing = 1;
+    }
 
     /* input -> float (int16 range) */
     if (c->in_format == AUDIO_FORMAT_PCM_FLOAT) {
@@ -265,6 +278,8 @@ static int read_buffer_cfg(clarifae_ctx_t* c, const buffer_config_t* incfg,
     c->out_format = outcfg->format;
     c->in_access  = incfg->accessMode;
     c->out_access = outcfg->accessMode;
+    c->input_buffer = (incfg->mask & EFFECT_CONFIG_BUFFER) ? incfg->buffer : (audio_buffer_t){0};
+    c->output_buffer = (outcfg->mask & EFFECT_CONFIG_BUFFER) ? outcfg->buffer : (audio_buffer_t){0};
     c->frames_until_refresh = 0;
     return 0;
 }
@@ -302,6 +317,8 @@ static int32_t ce_command(effect_handle_t self, uint32_t cmd, uint32_t cmdSize,
         ec->inputCfg.samplingRate = ec->outputCfg.samplingRate = c->sample_rate;
         ec->inputCfg.channels = c->in_channels;
         ec->outputCfg.channels = c->out_channels;
+        ec->inputCfg.buffer = c->input_buffer;
+        ec->outputCfg.buffer = c->output_buffer;
         ec->inputCfg.format  = c->in_format;
         ec->outputCfg.format = c->out_format;
         ec->inputCfg.accessMode  = c->in_access;
@@ -316,7 +333,10 @@ static int32_t ce_command(effect_handle_t self, uint32_t cmd, uint32_t cmdSize,
 
     case EFFECT_CMD_ENABLE:
         c->host_enabled = 1;
+        c->processing = 0;
         c->processing_logged = 0;
+        CLARIFAE_LOGI("framework enabled: %s session=%d",
+                     c->kind == CLF_KIND_INPUT ? "capture" : "playback", c->session_id);
         if (replySize && pReply && *replySize >= sizeof(int)) *(int*)pReply = 0;
         return 0;
 

@@ -10,6 +10,15 @@ The POCO X7 Pro is also known as `rodin`. A [public Rodin custom-ROM tree](https
 - The module checks for an active AIDL effects factory at install time. AIDL factories require a different plugin ABI. On a detected AIDL device the installer stages diagnostic tools and skips legacy effect registration.
 - The installer relies on the root manager's systemless mounts. Recent official KernelSU versions require a [mounting metamodule](https://kernelsu.org/guide/module.html) for modules that overlay system files. Visibility of a separate ODM partition also depends on the mount implementation.
 
+## What v1.1.4 fixes
+
+- RNNoise aligns the delayed processed signal with the original samples and uses a fixed queue so the result stays consistent across capture buffer sizes.
+- The installer preserves legacy `.conf` routes and uses Android's `output_session_processing` section for playback.
+- The module preserves empty routing selections, serializes settings writes, and reports when a saved setting could not be published to Android.
+- The diagnostic reports settings in both property namespaces, the framework enable event, and actual PCM callbacks separately.
+
+Android's recording thread [hands preprocessing to the audio HAL](https://android.googlesource.com/platform/frameworks/av/+/refs/heads/android15-release/services/audioflinger/Threads.cpp). A mapped library and a `framework enabled: capture` log can appear on routes where the vendor HAL never sends PCM to Clarifae. Android may reject software preprocessing on fast and raw routes.
+
 ## Verify during an independent recording
 
 1. Install the module ZIP through the root manager and reboot.

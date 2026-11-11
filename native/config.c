@@ -37,7 +37,7 @@ static int get_int(const char* name, int def, int lo, int hi) {
     if (get_property(name, buf) <= 0) return def;
     char* end = NULL;
     long v = strtol(buf, &end, 10);
-    if (end == buf) return def;       /* not a number -> default */
+    if (end == buf || *end) return def;
     if (v < lo) v = lo;
     if (v > hi) v = hi;
     return (int)v;
@@ -45,7 +45,7 @@ static int get_int(const char* name, int def, int lo, int hi) {
 
 void clarifae_config_load(clarifae_config_t* cfg) {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->enabled      = get_int("enabled",      1, 0, 1);
+    cfg->enabled      = get_int("enabled",      0, 0, 1);
     cfg->in_enabled   = get_int("in_enabled",   1, 0, 1);
     cfg->out_enabled  = get_int("out_enabled",  1, 0, 1);
     cfg->mode         = get_int("mode",         1, 1, 3);

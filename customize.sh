@@ -43,20 +43,21 @@ chmod 0755 "$CLARIFAE_DIR/clarifae-ctl"
 [ -d "$MODPATH/models" ] && cp -rf "$MODPATH/models/." "$CLARIFAE_DIR/models/" 2>/dev/null
 
 # --- stage registration without modifying the live partitions ---
+if [ -d "/vendor/$LIBD/soundfx" ]; then
+  effect_path="/vendor/$LIBD/soundfx/libclarifae.so"
+  lib_label=u:object_r:vendor_file:s0
+else
+  effect_path="/system/$LIBD/soundfx/libclarifae.so"
+  lib_label=u:object_r:system_file:s0
+fi
 lib_dest=
 rm -f "$PATCH_MARK"
 if aidl_effect_factory_running; then
   ui_print "! AIDL audio effects factory detected. This build supports legacy/HIDL effects."
   ui_print "  Diagnostic tools installed. Audio configuration was left alone."
   clarifae_log "AIDL effects factory detected; legacy registration skipped"
-elif patch_audio_effects "$MODPATH"; then
-  if [ -d "/vendor/$LIBD/soundfx" ]; then
-    lib_dest="$MODPATH/system/vendor/$LIBD/soundfx/libclarifae.so"
-    lib_label=u:object_r:vendor_file:s0
-  else
-    lib_dest="$MODPATH/system/$LIBD/soundfx/libclarifae.so"
-    lib_label=u:object_r:system_file:s0
-  fi
+elif patch_audio_effects "$MODPATH" "$effect_path"; then
+  lib_dest="$(overlay_path_for "$MODPATH" "$effect_path")"
   mkdir -p "$(dirname "$lib_dest")" && cp -f "$MODPATH/lib/$ABI/libclarifae.so" "$lib_dest" ||
     abort "! Unable to stage libclarifae.so"
   ui_print "- Staged libclarifae.so ($ABI) -> ${lib_dest#"$MODPATH/"}"
@@ -68,7 +69,7 @@ fi
 rm -rf "$MODPATH/lib"
 
 # --- seed props (service.sh re-applies on every boot) ---
-prop_sync 2>/dev/null
+with_config_lock prop_sync 2>/dev/null || ui_print "! Live settings will be retried at boot."
 
 # --- permissions ---
 set_perm_recursive "$MODPATH" 0 0 0755 0644

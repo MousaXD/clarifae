@@ -11,7 +11,7 @@ MACHINE = {"arm64-v8a": 183, "armeabi-v7a": 40, "x86_64": 62, "x86": 3}
 with zipfile.ZipFile(sys.argv[1]) as archive, tempfile.TemporaryDirectory() as tmp:
     assert archive.testzip() is None
     names = set(archive.namelist())
-    assert {"module.prop", "customize.sh", "common/patch-effects.awk",
+    assert {"module.prop", "customize.sh", "common/patch-effects.awk", "common/patch-effects-conf.awk",
             "scripts/diagnose-hyperos.sh", "webroot/index.html"} <= names
     assert not any(n.startswith((".git", "android-companion/", "native/")) for n in names)
     libraries = sorted(n for n in names if re.fullmatch(r"lib/[^/]+/libclarifae\.so", n))

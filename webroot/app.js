@@ -6,6 +6,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var setTimers = {};
   var refreshTimer = null;
+  var pendingWrites = Promise.resolve();
 
   /*
    * Resolve clarifae-ctl by absolute path rather than trusting the WebUI shell's
@@ -19,6 +20,16 @@
     '[ -x "$C" ] || C=/data/adb/modules/clarifae/system/bin/clarifae-ctl; ' +
     '[ -x "$C" ] || C=clarifae-ctl; ';
   function ctl(args) { return KSU.exec(CTL_RESOLVE + '"$C" ' + args); }
+
+  function shellArg(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  function writeCtl(args) {
+    var command = pendingWrites.then(function () { return ctl(args); });
+    pendingWrites = command.catch(function () {});
+    return command;
+  }
 
   function toast(msg) { KSU.toast(msg); showToast(msg); }
   function showToast(msg) {
@@ -35,7 +46,7 @@
 
   /* push a single setting and surface failures */
   function setKey(key, value, label) {
-    return ctl('set ' + key + ' ' + value).then(function (r) {
+    return writeCtl('set ' + shellArg(key) + ' ' + shellArg(value)).then(function (r) {
       if (r.errno !== 0) toast('Failed: ' + key + ' (' + (r.stderr || r.errno) + ')');
       else if (label) toast(label);
       return r;
@@ -215,12 +226,18 @@
     });
 
     $('btn-apply').addEventListener('click', function () {
-      ctl('apply').then(function () { toast('Applied'); refreshStatus(); });
+      writeCtl('apply').then(function (r) {
+        toast(r.errno === 0 ? 'Applied' : (r.stderr || 'Apply failed'));
+        refreshStatus();
+      });
     });
     $('btn-restart').addEventListener('click', function () {
       if (typeof confirm === 'function' && !confirm('Restart audioserver? Active recordings/calls will glitch briefly.')) return;
       toast('Restarting audio…');
-      ctl('restart-audio').then(function () { setTimeout(refreshStatus, 1500); });
+      writeCtl('restart-audio').then(function (r) {
+        if (r.errno !== 0) toast(r.stderr || 'Audio restart failed');
+        setTimeout(refreshStatus, 1500);
+      });
     });
     $('btn-log').addEventListener('click', function () {
       ctl('log').then(function (r) { $('log-content').textContent = r.stdout || r.stderr || '(empty)'; $('log-modal').classList.remove('hidden'); });
@@ -229,7 +246,10 @@
     $('log-modal').addEventListener('click', function (e) { if (e.target === this) this.classList.add('hidden'); });
     $('btn-reset').addEventListener('click', function () {
       if (typeof confirm === 'function' && !confirm('Reset all Clarifae settings to defaults?')) return;
-      ctl('reset').then(function () { toast('Reset to defaults'); loadAll(); });
+      writeCtl('reset').then(function (r) {
+        toast(r.errno === 0 ? 'Reset to defaults' : (r.stderr || 'Reset failed'));
+        loadAll();
+      });
     });
     $('btn-refresh').addEventListener('click', refreshStatus);
   }

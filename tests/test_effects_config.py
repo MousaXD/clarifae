@@ -1,5 +1,6 @@
 """Check the installer patch against realistic XML and upgrades."""
 from pathlib import Path
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -59,3 +60,47 @@ assert effects(missing, "postprocess", "music") == ["clarifae_out"]
 assert patch("<audio_effects_conf><libraries/></audio_effects_conf>", check=False).returncode != 0
 assert patch(STOCK.replace("</stream>", "</wrong>"), check=False).returncode != 0
 print("Installer XML checks passed")
+
+
+LEGACY = """# libraries { ignored }
+libraries {
+    vendor_ns {
+        path /vendor/lib/soundfx/libvendor_ns.so
+    }
+}
+effects {
+    oem_ns {
+        library vendor_ns
+        uuid oem-uuid
+    }
+}
+pre_processing {
+    voice_communication {
+        oem_ns {}
+    }
+}
+"""
+legacy_patcher = PATCHER.with_name("patch-effects-conf.awk")
+
+
+def patch_legacy(config, check=True):
+    return subprocess.run(
+        ["awk", "-v", f"uuid_in={INPUT_UUID}", "-v", f"uuid_out={OUTPUT_UUID}",
+         "-v", "in_streams=mic voice_communication", "-v", "out_streams=music",
+         "-v", "lib_path=/vendor/lib64/soundfx/libclarifae.so", "-f", str(legacy_patcher)],
+        input=config, text=True, capture_output=True, check=check,
+    )
+
+
+first = patch_legacy(LEGACY).stdout
+for conf in (first, patch_legacy(first).stdout):
+    assert conf.count("voice_communication {") == 1
+    assert conf.count("output_session_processing {") == 1
+    assert conf.count("oem_ns {}") == 1
+    assert conf.count("clarifae_ns {}") == 2
+    assert conf.count(INPUT_UUID) == conf.count(OUTPUT_UUID) == 1
+    assert f"library clarifae\n    uuid {INPUT_UUID}\n" in conf
+    assert "path /vendor/lib64/soundfx/libclarifae.so\n" in conf
+    assert re.search(r"music\s*\{\s*clarifae_out\s*\{\s*\}\s*\}", conf)
+assert patch_legacy("libraries {", check=False).returncode != 0
+print("Legacy configuration checks passed")

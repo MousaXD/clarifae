@@ -102,9 +102,9 @@ verification steps.
 ```
 
 Configuration flows: **WebUI → `clarifae-ctl` → `config.conf` → `persist.clarifae.*` →
-effect**. The effect detects a property change (via the property serial) and reloads
-parameters / re-opens the backend on the next audio buffer, so most changes apply without
-a reboot. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+effect**. Each active session refreshes its properties roughly four times per second,
+so most settings apply during recording. Routing changes take effect after installing
+the module again and rebooting. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## Configuration reference
 
@@ -148,10 +148,9 @@ clarifae-ctl version
 
 ## Limitations & caveats
 
-- **Auto-attach is device-dependent.** It edits the device's `audio_effects.xml` via an
-  overlay. Some vendors use non-standard formats/locations; if patching fails the library is
-  still installed and you can attach it manually (see
-  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
+- **Auto-attach is device-dependent.** The installer stages a legacy/HIDL effect
+  configuration through a systemless overlay. The [capture diagnostic](docs/HYPEROS_COMPATIBILITY.md)
+  reports the audio effects factory, mount visibility, and whether the vendor HAL sends PCM to Clarifae.
 - **Not every app/stream gets cleaned.** Effects apply per *audio source* (input) and per
   *stream type* (output). Apps using their own DSP, a raw/`unprocessed` source, direct/offload
   output, or exotic routes may bypass it. New sessions pick up changes; some need a `restart-audio`.
@@ -163,7 +162,7 @@ clarifae-ctl version
   `sepolicy.rule` is included for stricter devices.
 - **DTLN/DeepFilterNet are experimental** and require extra runtimes/models; without them
   Clarifae uses RNNoise.
-- Real-time enhancement adds a small fixed latency (~10 ms for RNNoise + resampler).
+- Real-time enhancement adds a small fixed latency (about 30 ms for RNNoise before Android routing latency).
 
 ## Licensing & credits
 
