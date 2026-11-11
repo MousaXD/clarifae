@@ -47,7 +47,7 @@ void clarifae_config_load(clarifae_config_t* cfg) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->enabled      = get_int("enabled",      0, 0, 1);
     cfg->in_enabled   = get_int("in_enabled",   1, 0, 1);
-    cfg->out_enabled  = get_int("out_enabled",  1, 0, 1);
+    cfg->out_enabled  = get_int("out_enabled",  0, 0, 1);
     cfg->mode         = get_int("mode",         1, 1, 3);
     cfg->strength     = get_int("strength",     70, 0, 100);
     cfg->out_strength = get_int("out_strength", 60, 0, 100);
@@ -57,7 +57,7 @@ void clarifae_config_load(clarifae_config_t* cfg) {
     cfg->autogain     = get_int("autogain",     0, 0, 1);
     cfg->loglevel     = get_int("loglevel",     1, 0, 3);
     get_str("targets", cfg->targets, (int)sizeof(cfg->targets),
-            "mic,voice_comm");
+            "mic,voice_comm,camcorder");
     get_str("out_targets", cfg->out_targets, (int)sizeof(cfg->out_targets),
             "music,voice_call");
     atomic_store_explicit(&clarifae_log_level, cfg->loglevel, memory_order_relaxed);

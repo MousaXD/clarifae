@@ -115,13 +115,13 @@ and is mirrored to system properties the effect reads:
 |---|---|---|---|
 | `enabled`      | `0` / `1` | `1` | Master on/off (bypass = passthrough) |
 | `in_enabled`   | `0` / `1` | `1` | Clean the **microphone** (input) |
-| `out_enabled`  | `0` / `1` | `1` | Clean **playback** (output) |
+| `out_enabled`  | `0` / `1` | `0` | Clean **playback** (output) |
 | `mode`         | `1` / `2` / `3` | `1` | RNNoise / DTLN / DeepFilterNet |
 | `strength`     | `0`–`100` | `70` | Wet/dry blend for the **mic** |
 | `out_strength` | `0`–`100` | `60` | Wet/dry blend for **playback** (lower for music) |
 | `atten_db`     | `0`–`60` | `24` | Max suppression depth (protects tone) |
 | `vad`          | `0`–`100` | `50` | Voice-activity sensitivity (gate / auto-gain) |
-| `targets`      | csv of `mic,voice_comm,camcorder,voice_rec` | `mic,voice_comm` | Capture sources (input) |
+| `targets`      | csv of `mic,voice_comm,camcorder,voice_rec` | `mic,voice_comm,camcorder` | Capture sources (input) |
 | `out_targets`  | csv of `music,voice_call,ring,alarm,notification,system` | `music,voice_call` | Playback streams (output) |
 | `highpass`     | `0` / `1` | `1` | DC/rumble high-pass pre-filter |
 | `autogain`     | `0` / `1` | `0` | Gentle make-up gain on speech |

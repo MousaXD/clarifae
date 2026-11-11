@@ -104,3 +104,64 @@ for conf in (first, patch_legacy(first).stdout):
     assert re.search(r"music\s*\{\s*clarifae_out\s*\{\s*\}\s*\}", conf)
 assert patch_legacy("libraries {", check=False).returncode != 0
 print("Legacy configuration checks passed")
+
+
+STOCK_NS = "c06c8400-8e06-11e0-9cb6-0002a5d5c51b"
+STOCK_TYPES = ("mic", "camcorder", "voice_communication")
+
+
+def patch_stock(xml, factory, check=True):
+    return subprocess.run(
+        ["awk", "-v", "engine=stock", "-v", f"factory={factory}",
+         "-v", f"in_streams={' '.join(STOCK_TYPES)}", "-f", str(PATCHER)],
+        input=xml, text=True, capture_output=True, check=check,
+    )
+
+
+for factory, effect in (("hidl", "ns"), ("aidl", "noise_suppression")):
+    stock = STOCK.replace(
+        "</effects>",
+        f'<effect name="{effect}" library="oem" uuid="{STOCK_NS}"/></effects>',
+    ).replace(
+        '<apply effect="oem_proxy"/></stream>',
+        f'<apply effect="oem_proxy"/><apply effect="{effect}"/></stream>',
+    ).replace(
+        "</preprocess>",
+        '<stream type="unprocessed"/><stream type="voice_recognition"/></preprocess>',
+    )
+    overlay = patch_stock(stock, factory).stdout
+    for text in (overlay, patch_stock(overlay, factory).stdout):
+        root = ET.fromstring(text)
+        assert effects(root, "preprocess", "voice_communication") == ["oem_proxy", effect]
+        assert effects(root, "preprocess", "mic") == [effect]
+        assert effects(root, "preprocess", "camcorder") == [effect]
+        assert effects(root, "preprocess", "unprocessed") == []
+        assert effects(root, "preprocess", "voice_recognition") == []
+        assert effects(root, "postprocess", "music") == []
+        assert len(root.findall("./{*}libraries/{*}library")) == 1
+
+    native_after_stock = ET.fromstring(patch(overlay).stdout)
+    assert effects(native_after_stock, "preprocess", "mic") == ["clarifae_ns"]
+    assert effects(native_after_stock, "preprocess", "camcorder") == []
+    stock_after_native = ET.fromstring(patch_stock(patch(stock).stdout, factory).stdout)
+    assert effects(stock_after_native, "preprocess", "mic") == [effect]
+    assert effects(stock_after_native, "postprocess", "music") == []
+
+    unresolved = stock.replace('library="oem" uuid="' + STOCK_NS, 'library="missing" uuid="' + STOCK_NS)
+    assert patch_stock(unresolved, factory, check=False).returncode != 0
+assert patch_stock(STOCK, "hidl", check=False).returncode != 0
+assert patch_stock(STOCK, "aidl", check=False).returncode != 0
+# A recognized OEM proxy already in a source chain stays in that chain.
+with_proxy = STOCK.replace(
+    'name="oem_proxy" library="oem" uuid="native-proxy"',
+    'name="ns" library="oem" uuid="5512a6a0-01b0-4d8c-b16b-88e266279baf"',
+).replace(
+    '<apply effect="oem_proxy"/>', '<apply effect="ns"/>',
+).replace(
+    "</effects>",
+    f'<effect name="noise_suppression" library="oem" uuid="{STOCK_NS}"/></effects>',
+)
+root = ET.fromstring(patch_stock(with_proxy, "hidl").stdout)
+assert effects(root, "preprocess", "voice_communication") == ["ns"]
+assert effects(root, "preprocess", "mic") == ["noise_suppression"]
+print("Stock noise suppression route checks passed on HIDL and AIDL fixtures")

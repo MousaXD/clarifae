@@ -9,7 +9,7 @@ LOGFILE="$CLARIFAE_DIR/clarifae.log"
 PATCH_MARK="$CLARIFAE_DIR/audio_effects.patched"   # holds the target config path
 MODULE_DIR=/data/adb/modules/clarifae              # always present post-boot, mount-namespace independent
 
-CLARIFAE_VERSION="v1.1.4"
+CLARIFAE_VERSION="v1.2.0"
 EFFECT_UUID="c1a71fae-0001-4a5e-9b10-43578768aaf3"       # input  (capture pre-proc)
 EFFECT_UUID_OUT="c1a71fae-0002-4a5e-9b10-43578768aaf3"   # output (playback post-proc)
 
@@ -19,13 +19,13 @@ clarifae_defaults() {
   cat <<'EOF'
 enabled=1
 in_enabled=1
-out_enabled=1
+out_enabled=0
 mode=1
 strength=70
 out_strength=60
 atten_db=24
 vad=50
-targets=mic,voice_comm
+targets=mic,voice_comm,camcorder
 out_targets=music,voice_call
 highpass=1
 autogain=0
@@ -171,16 +171,22 @@ mode_name() {
 
 # ---- audio_effects.xml / .conf integration ----
 
-find_audio_effects_file() {
+find_audio_effects_xml() (
+  filename="$1"
   _sku="$(getprop ro.boot.product.vendor.sku)"
   case "$_sku" in
     ''|*[!a-zA-Z0-9_.-]*) _sku_dir= ;;
     *) _sku_dir="/vendor/etc/audio/sku_$_sku" ;;
   esac
   for _dir in /odm/etc $_sku_dir /vendor/etc /system/etc; do
-    _f="$_dir/audio_effects.xml"
+    _f="$_dir/$filename"
     [ -r "$_f" ] && { echo "$_f"; return 0; }
   done
+  return 1
+)
+
+find_audio_effects_file() {
+  find_audio_effects_xml audio_effects.xml && return 0
   for _f in /vendor/etc/audio_effects.conf /system/etc/audio_effects.conf; do
     [ -r "$_f" ] && { echo "$_f"; return 0; }
   done

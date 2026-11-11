@@ -55,7 +55,9 @@ jobs:
           ./build.sh
           bash tests/test_native.sh
           ./scripts/package.sh
-          python3 tests/test_module_zip.py dist/clarifae-*.zip
+          python3 tests/test_module_zip.py dist/clarifae-v*.zip
+          ./scripts/package.sh stock
+          python3 tests/test_stock_zip.py dist/clarifae-stock-v*.zip
       - uses: actions/upload-artifact@v4
         with:
           name: clarifae-root-module

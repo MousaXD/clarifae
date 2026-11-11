@@ -32,7 +32,10 @@ printf '%s=%s\n' "$3" "$4" >> "$PROP_LOG"
             env=dict(env, FAIL_PROP=fail_prop), text=True, capture_output=True, check=check,
         )
 
-    assert json.loads(ctl("get-json").stdout)["out_targets"] == "music,voice_call"
+    defaults = json.loads(ctl("get-json").stdout)
+    assert defaults["out_targets"] == "music,voice_call"
+    assert defaults["targets"] == "mic,voice_comm,camcorder"
+    assert defaults["out_enabled"] is False
     ctl("set", "out_targets", "")
     assert json.loads(ctl("get-json").stdout)["out_targets"] == ""
     assert "persist.vendor.clarifae.out_targets=\n" in props.read_text()

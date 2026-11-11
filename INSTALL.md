@@ -1,5 +1,19 @@
 # Installing & building Clarifae
 
+## Stock microphone noise suppression
+
+On HyperOS, try the stock module ZIP if the phone routes microphone audio past
+Clarifae's RNNoise effect. The installer extends a noise suppressor already
+declared by the firmware to normal microphone, camera, and VoIP capture.
+Any app using a supported capture route can pick it up after reboot.
+
+- Install `clarifae-stock-<version>.zip` from the root manager while Android is running.
+- Both packages use the Clarifae module ID. Installing either one replaces the active configuration at the next reboot.
+- Disable the stock module and reboot to compare the phone's original routing.
+- Build the stock ZIP from source with `./scripts/package.sh stock`. It uses the phone's existing effect library.
+
+See [HyperOS verification](docs/HYPEROS_COMPATIBILITY.md) for testing in several apps.
+
 ## 1. Prerequisites
 
 | For | You need |
